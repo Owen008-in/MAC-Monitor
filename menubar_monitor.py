@@ -35,10 +35,8 @@ CORNER         = 14
 HIST           = 60          # points dans les sparklines
 NOTIF_COOLDOWN = 300         # secondes entre deux notifications identiques
 
-PLIST_PATH = os.path.expanduser(
-    "~/Library/LaunchAgents/com.owenmionnet.macmonitor.plist"
-)
-PLIST_LABEL = "com.owenmionnet.macmonitor"
+PLIST_PATH  = os.path.expanduser("~/Library/LaunchAgents/com.macmonitor.app.plist")
+PLIST_LABEL = "com.macmonitor.app"
 
 # ─── Palette ──────────────────────────────────────────────────────────────────
 def _rgba(r, g, b, a=1.0):

@@ -1,0 +1,4 @@
+psutil
+rumps
+pyobjc-core
+pyobjc-framework-Cocoa
