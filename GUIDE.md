@@ -1,6 +1,7 @@
 # MAC Monitor Pro — Guide
 
-Un robot animé dans la barre de menu macOS qui surveille ton système en temps réel.
+Un personnage animé dans la barre de menu macOS qui surveille ton système en temps réel.
+Icônes disponibles : robot · ghost · alien · ninja · cat (changeable depuis l'onglet Process).
 
 ---
 
@@ -25,7 +26,7 @@ L'icône dans la barre de menu est un robot animé dont la couleur change selon 
 | 🟠 Orange | CPU 60–80% — chaud |
 | 🔴 Rouge | CPU > 80% — surchargé |
 
-Le titre à côté affiche le CPU % et la vitesse de téléchargement en temps réel.
+Le titre à côté affiche en cycle : CPU% / RAM% / Réseau / Horloge (clic sur la valeur pour changer).
 
 ---
 
@@ -37,7 +38,7 @@ Cliquer sur le robot ouvre un panel avec 4 onglets.
 
 - **CPU** — usage global + sparkline 60s + barre + fréquence + température
 - **GPU** — usage GPU (si disponible)
-- **RAM** — usage + pression mémoire macOS (Normal / Avertissement / Critique)
+- **RAM** — usage + label pression (Normal <70%, Élevé 70–85%, Critique >85%) — couleur synchronisée avec la barre et le chiffre
 - **Batterie** — pourcentage + barre + temps restant + santé (%)
 - **Fuseaux horaires** — UTC · NY · Tokyo en bas de la card
 
@@ -50,7 +51,7 @@ Cliquer sur le robot ouvre un panel avec 4 onglets.
 - **VPN** — affiche les VPNs actifs (WireGuard, Tailscale, OpenVPN…)
 - **Stockage** — usage disque / + vitesses lecture/écriture
 
-### Agenda
+### Utils
 
 - **Calendrier** — 5 prochains événements sur 5 jours (Google Calendar ou Apple Calendar)
 - **Musique** — titre et artiste en cours (Apple Music ou Spotify) + boutons ◀◀ ⏯ ▶▶
@@ -103,7 +104,20 @@ Par défaut le calendrier utilise Apple Calendar. Pour connecter Google Calendar
 2. Entrer ton `client_id` et `client_secret` Google (Google Cloud Console → API Calendar → Credentials OAuth Desktop)
 3. S'authentifier dans le navigateur
 
-Une fois configuré, les événements Google apparaissent automatiquement dans l'onglet Agenda.
+Une fois configuré, les événements Google apparaissent automatiquement dans l'onglet Utils.
+
+---
+
+## Consommation ressources
+
+L'app adapte son activité selon l'état du panel :
+
+| État | Comportement |
+|---|---|
+| Panel **fermé** | Pas de redraw, threads background suspendus, animation icône ~1fps |
+| Panel **ouvert** | Refresh affichage 1s, stats toutes 2s, animation 5fps |
+
+Consommation typique : **~2–4% CPU** panel fermé, **~8–12%** panel ouvert.
 
 ---
 

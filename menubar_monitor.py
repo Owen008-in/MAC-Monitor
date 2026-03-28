@@ -12,6 +12,7 @@ from AppKit import (
     NSMenuItem, NSMenu, NSView, NSFont, NSColor, NSBezierPath,
     NSAttributedString, NSForegroundColorAttributeName, NSFontAttributeName,
     NSImage, NSRectFill, NSPasteboard, NSAppearance,
+    NSPanel, NSEvent,
 )
 
 # ─── Dimensions ───────────────────────────────────────────────────────────────
@@ -28,7 +29,7 @@ Y_FLOOR     = 14
 # Hauteur par onglet (calculée pour que tout le contenu rentre)
 PH_BY_TAB = {
     "sys":  520,   # cpu(136) + gap + ram(116) + gap + batt+tz(106) + marges
-    "net":  440,   # réseau(188) + disque(112) + marges
+    "net":  540,   # réseau(188) + disque(130) + speedtest(88) + marges
     "cal":  490,   # calendrier(190) + musique(102) + météo(58) + marges
     "proc": 760,   # 10 procs(284) + volume(36) + actions(48) + icônes(160) + thèmes(54) + quitter(34)
 }
@@ -49,7 +50,7 @@ TEMP_ALERT  = 90
 
 TABS        = ["sys", "net", "cal", "proc"]
 TAB_LABEL   = {"sys": "Système", "net": "Réseau",
-               "cal": "Agenda",  "proc": "Process"}
+               "cal": "Utils",   "proc": "Process"}
 
 PLIST_PATH  = os.path.expanduser("~/Library/LaunchAgents/com.macmonitor.app.plist")
 PLIST_LABEL = "com.macmonitor.app"
@@ -138,7 +139,7 @@ def _line(x1, y1, x2, y2, color, width=0.5):
     p.lineToPoint_(NSMakePoint(x2, y2))
     color.setStroke(); p.setLineWidth_(width); p.stroke()
 
-def _bar(x, y, w, h, value, accent):
+def _bar(x, y, w, h, value, accent, force=False):
     """Barre de progression arrondie avec glow."""
     r = h / 2.0
     C_DIM.setFill()
@@ -146,7 +147,7 @@ def _bar(x, y, w, h, value, accent):
         NSMakeRect(x, y, w, h), r, r).fill()
     if value <= 0: return
     fw    = max(r * 2, w * min(value, 100) / 100.0)
-    color = _bar_col(value, accent)
+    color = accent if force else _bar_col(value, accent)
     # glow
     color.colorWithAlphaComponent_(0.18).setFill()
     NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
@@ -192,10 +193,10 @@ def _section_label(x, y, text, accent):
         NSMakeRect(x, y + 3, 3, 7), 1.5, 1.5).fill()
     _draw(text, x + 8, y, accent.colorWithAlphaComponent_(0.75), F_LABEL)
 
-def _big_value(x, y, value, unit, accent):
+def _big_value(x, y, value, unit, accent, force=False):
     """Grosse valeur numérique + unité."""
     vs = f"{value:.1f}"
-    _draw(vs, x, y, _bar_col(value, accent), F_VALUE)
+    _draw(vs, x, y, accent if force else _bar_col(value, accent), F_VALUE)
     aw = _tw(vs, F_VALUE)
     _draw(unit, x + aw + 3, y + 8, C_GRAY, F_UNIT)
     return aw
@@ -272,7 +273,7 @@ class PanelView(NSView):
         # Contenu
         y = _y_content(h)
         if   self._tab == "sys":  self._draw_sys(y, bw, s, w, rects)
-        elif self._tab == "net":  self._draw_net(y, bw, s, w)
+        elif self._tab == "net":  self._draw_net(y, bw, s, w, rects)
         elif self._tab == "cal":  self._draw_cal(y, bw, s, w, rects)
         elif self._tab == "proc": self._draw_proc(y, bw, s, w, rects)
 
@@ -394,25 +395,23 @@ class PanelView(NSView):
         y -= cpu_card_h + 18
 
         # ── RAM Card ──────────────────────────────────
-        mem_pres = s.get('mem_pressure', '—')
-        # Couleur basée sur pression système ET usage RAM réel
-        if mem_pres == "Critique" or ram >= 92:
-            pres_col = C_RED
-        elif mem_pres == "Avertissement" or ram >= 80:
-            pres_col = C_ORA
+        # Label basé sur le % RAM réel (mis à jour toutes les 2s)
+        if ram >= 85:
+            mem_label = "Critique"; pres_col = C_RED
+        elif ram >= 70:
+            mem_label = "Élevé";    pres_col = C_ORA
         else:
-            pres_col = C_GREEN
+            mem_label = "Normal";   pres_col = C_GREEN
         _card(PAD, y, bw, 98, C_RAM)
         _section_label(PAD + 10, y - 14, "MÉMOIRE", C_RAM)
-        if mem_pres != '—':
-            pc = pres_col.colorWithAlphaComponent_(0.85)
-            _draw_r(f"● {mem_pres}", w - PAD - 10, y - 14, pc, F_SM)
+        pc = pres_col.colorWithAlphaComponent_(0.85)
+        _draw_r(f"● {mem_label}", w - PAD - 10, y - 14, pc, F_SM)
 
         vy = y - 50
-        _big_value(PAD + 10, vy, ram, "%", C_RAM)
+        _big_value(PAD + 10, vy, ram, "%", pres_col, force=True)
         _spark(PAD + 90, vy + 2, bw - 100, 28,
-               s.get('ram_hist', []), C_RAM)
-        _bar(PAD + 10, vy - 14, bw - 20, 7, ram, C_RAM)
+               s.get('ram_hist', []), pres_col)
+        _bar(PAD + 10, vy - 14, bw - 20, 7, ram, pres_col, force=True)
         _draw(s.get('ram_info', ''), PAD + 10, vy - 28, C_GRAY, F_SM)
 
         y -= 98 + 18
@@ -452,7 +451,7 @@ class PanelView(NSView):
             _draw_c(tz_txt, w / 2, base_y, _c(1, 1, 1, 0.30), SF(9, 0.0))
 
     # ── Page 2 : Réseau ──────────────────────────────────────
-    def _draw_net(self, y, bw, s, w):
+    def _draw_net(self, y, bw, s, w, rects):
         # ── Réseau Card ───────────────────────────────
         ip   = s.get('local_ip', '—')
         gw   = s.get('gateway', '')
@@ -521,6 +520,47 @@ class PanelView(NSView):
         _draw(f"R  {s.get('disk_r','0 B/s')}", PAD + 10, ioy, C_GREEN, F_SM)
         _draw_r(f"W  {s.get('disk_w','0 B/s')}", w - PAD - 10, ioy,
                 C_ORA, F_SM)
+
+        y -= 112 + 18
+
+        # ── Speedtest Card ────────────────────────────
+        st_state = s.get('stest_state', 'idle')
+        st_h = 70
+        _card(PAD, y, bw, st_h, C_NET, alpha=0.05)
+        _section_label(PAD + 10, y - 14, "SPEED TEST", C_NET)
+
+        # Bouton relancer (sauf si en cours)
+        if st_state != "running" and _app:
+            rbg = (_c(0.30, 0.62, 1.00, 0.25) if self._hover == "stest_run"
+                   else _c(0.30, 0.62, 1.00, 0.10))
+            rects["stest_run"] = _btn(w - PAD - 64, y - 18, 64, 16,
+                                      "▶ Relancer", rbg, C_NET, r=7)
+
+        if st_state == "running":
+            # Animation "En cours"
+            dots = "." * (int(time.time() * 2) % 4)
+            _draw_c(f"Mesure en cours{dots}", w / 2, y - 40,
+                    _c(1, 1, 1, 0.45), F_SM)
+        elif st_state in ("done",):
+            dl_m = s.get('stest_dl', 0) / 1_000_000
+            ul_m = s.get('stest_ul', 0) / 1_000_000
+            rtt  = s.get('stest_rtt', 0)
+            dl_c = C_GREEN if dl_m >= 50 else C_ORA if dl_m >= 10 else C_RED
+            ul_c = C_GREEN if ul_m >= 20 else C_ORA if ul_m >= 5  else C_RED
+            _draw("↓", PAD + 10, y - 36, dl_c, SF(14, 0.2))
+            _draw(f"{dl_m:.0f} Mbps", PAD + 26, y - 36, C_WHITE, F_INFO)
+            _draw("↑", PAD + 10, y - 54, ul_c, SF(14, 0.2))
+            _draw(f"{ul_m:.0f} Mbps", PAD + 26, y - 54, C_WHITE, F_INFO)
+            _draw_r(f"RTT {rtt:.0f} ms", w - PAD - 10, y - 36, C_GRAY, F_SM)
+            ago = int(time.time() - s.get('stest_t', time.time()))
+            _draw_r(f"il y a {ago}s" if ago < 120 else "", w - PAD - 10, y - 54,
+                    _c(1, 1, 1, 0.25), SF(8, 0.0))
+        elif st_state == "error":
+            _draw_c("Échec — réseau indisponible ?", w / 2, y - 44,
+                    C_RED.colorWithAlphaComponent_(0.70), F_SM)
+        else:
+            _draw_c("Démarrage au prochain refresh…", w / 2, y - 44,
+                    _c(1, 1, 1, 0.25), F_SM)
 
     # ── Page 3 : Agenda ──────────────────────────────────────
     def _draw_cal(self, y, bw, s, w, rects):
@@ -834,7 +874,7 @@ class PanelView(NSView):
             r = (self._btn_rects or {}).get("quit")
             if r and (r.origin.x <= pt.x <= r.origin.x + r.size.width and
                       r.origin.y <= pt.y <= r.origin.y + r.size.height):
-                if _menu: _menu.cancelTracking()
+                if _panel_win: _panel_win.orderOut_(None)
                 return
             r2 = (self._btn_rects or {}).get("title_mode")
             if r2 and (r2.origin.x <= pt.x <= r2.origin.x + r2.size.width and
@@ -851,7 +891,13 @@ class PanelView(NSView):
                 self._tab = tab
                 new_ph = PH_BY_TAB.get(tab, 520)
                 self.setFrame_(NSMakeRect(0, 0, PW, new_ph))
-                self.setNeedsDisplay_(True)
+                if _panel_win:
+                    _panel_win.setContentSize_(NSMakeSize(PW, new_ph))
+                # Lancer speedtest au switch sur onglet réseau
+                if tab == "net" and _app and _app._stest_state != "running":
+                    _app._stest_state = "running"
+                    _run_speedtest(_app)
+                self.display()
                 return
 
         # Toggle mode tri processus
@@ -859,7 +905,7 @@ class PanelView(NSView):
         if r and (r.origin.x <= pt.x <= r.origin.x + r.size.width and
                   r.origin.y <= pt.y <= r.origin.y + r.size.height):
             self._top_mode = "mem" if self._top_mode == "cpu" else "cpu"
-            self.setNeedsDisplay_(True)
+            self.display()
             return
 
         # Boutons
@@ -868,7 +914,7 @@ class PanelView(NSView):
             if (r.origin.x <= pt.x <= r.origin.x + r.size.width and
                     r.origin.y <= pt.y <= r.origin.y + r.size.height):
                 if name in ("quit", "quit2"):
-                    if _menu: _menu.cancelTracking()
+                    if _panel_win: _panel_win.orderOut_(None)
                     from AppKit import NSApplication
                     NSApplication.sharedApplication().terminate_(None)
                 elif _app:
@@ -879,11 +925,26 @@ class PanelView(NSView):
                         self._copy_flash = time.time() + 2.0
                     elif name == "act_cpu":    subprocess.Popen(["open", "-a", "Activity Monitor"])
                     elif name == "lock":       _lock_screen()
-                    elif name == "music_prev": _music_control("prev")
-                    elif name == "music_play": _music_control("play")
-                    elif name == "music_next": _music_control("next")
-                    elif name == "vol_dn": _set_volume(_S.get('volume', 50) - 5)
-                    elif name == "vol_up": _set_volume(_S.get('volume', 50) + 5)
+                    elif name == "stest_run":
+                        if _app._stest_state != "running":
+                            _app._stest_state = "running"
+                            _run_speedtest(_app)
+                    elif name in ("music_prev", "music_play", "music_next"):
+                        _music_control(name[6:])  # "prev"/"play"/"next"
+                        # Forcer re-fetch au prochain statsRefresh_ (dans ≤2s)
+                        if _app: _app._music_t = 0
+                    elif name == "vol_dn":
+                        cur = _S.get('volume', 50)
+                        nv  = max(0, (cur if cur >= 0 else 50) - 5)
+                        _set_volume(nv)
+                        _S['volume'] = nv
+                        if _app: _app._volume = nv
+                    elif name == "vol_up":
+                        cur = _S.get('volume', 50)
+                        nv  = min(100, (cur if cur >= 0 else 50) + 5)
+                        _set_volume(nv)
+                        _S['volume'] = nv
+                        if _app: _app._volume = nv
                     elif name.startswith("kill_"):
                         pid = int(name[5:])
                         try:
@@ -895,7 +956,7 @@ class PanelView(NSView):
                         _save_theme(name[6:])
                     elif name.startswith("icon_"):
                         _save_icon_style(name[5:])
-                self.setNeedsDisplay_(True)
+                self.display()
                 break
 
     def mouseMoved_(self, event):
@@ -913,22 +974,26 @@ class PanelView(NSView):
         changed = (hv != self._hover or ihv != self._icon_hover)
         self._hover = hv; self._icon_hover = ihv
         if changed:
-            self.setNeedsDisplay_(True)
+            self.display()
 
     def mouseExited_(self, _):
         if self._hover or self._icon_hover:
             self._hover = ""; self._icon_hover = ""
-            self.setNeedsDisplay_(True)
+            self.display()
 
     def acceptsFirstMouse_(self, _): return True
-    def refreshDisplay_(self, _): self.setNeedsDisplay_(True)
+    def refreshDisplay_(self, _):
+        if not _panel_win or not _panel_win.isVisible(): return
+        self.setNeedsDisplay_(True)
+        self.display()
 
 
 # ─── Delegate ─────────────────────────────────────────────────────────────────
 class _StatsDelegate(NSObject):
     _app_ref = None
     def statsRefresh_(self, _):
-        if self._app_ref: self._app_ref._do_stats()
+        if self._app_ref: self._app_ref._do_stats(
+            panel_open=bool(_panel_win and _panel_win.isVisible()))
 
 
 # ─── Robot menubar v2 ─────────────────────────────────────────────────────────
@@ -1810,30 +1875,60 @@ def _get_cpu_temp():
     return "—"
 
 def _get_music():
-    script = '''
-tell application "System Events"
-    set procs to name of every process
-    if procs contains "Music" then
-        tell application "Music"
-            if player state is playing then
-                return (name of current track) & " — " & (artist of current track)
-            end if
-        end tell
-    end if
-    if procs contains "Spotify" then
-        tell application "Spotify"
-            if player state is playing then
-                return (name of current track) & " — " & (artist of current track)
-            end if
-        end tell
+    """Récupère le titre/artiste en cours sans passer par System Events."""
+    for app_name, proc_name in (("Music", "Music"), ("Spotify", "Spotify")):
+        # Vérifie si le process tourne via pgrep (pas de permission nécessaire)
+        if subprocess.run(["pgrep", "-x", proc_name],
+                          capture_output=True).returncode != 0:
+            continue
+        script = f'''
+tell application "{app_name}"
+    if player state is playing then
+        return (name of current track) & " — " & (artist of current track)
+    else if player state is paused then
+        return "⏸ " & (name of current track) & " — " & (artist of current track)
     end if
 end tell
 return ""
 '''
-    try:
-        return subprocess.run(["osascript","-e",script],
-                              capture_output=True,text=True,timeout=2).stdout.strip()
-    except Exception: return ""
+        try:
+            out = subprocess.run(["osascript", "-e", script],
+                                 capture_output=True, text=True, timeout=3).stdout.strip()
+            if out:
+                return out
+        except Exception:
+            pass
+    return ""
+
+def _run_speedtest(app):
+    """Lance networkQuality en background et met à jour les résultats."""
+    import json, threading
+    def _worker():
+        try:
+            r = subprocess.run(["networkQuality", "-c"],
+                               capture_output=True, text=True, timeout=35)
+            if r.returncode == 0:
+                data = json.loads(r.stdout)
+                app._stest_dl    = data.get("dl_throughput", 0)
+                app._stest_ul    = data.get("ul_throughput", 0)
+                app._stest_rtt   = data.get("base_rtt", 0)
+                app._stest_state = "done"
+            else:
+                app._stest_state = "error"
+        except Exception:
+            app._stest_state = "error"
+        app._stest_t = time.time()
+        # Mettre à jour _S directement pour affichage immédiat
+        _S.update({
+            "stest_dl":    app._stest_dl,
+            "stest_ul":    app._stest_ul,
+            "stest_rtt":   app._stest_rtt,
+            "stest_state": app._stest_state,
+            "stest_t":     app._stest_t,
+        })
+    threading.Thread(target=_worker, daemon=True).start()
+    # Marquer "running" dans _S immédiatement
+    _S["stest_state"] = "running"
 
 def _get_ping():
     try:
@@ -1852,7 +1947,9 @@ def _get_mem_pressure():
                 m = re.search(r"(\d+)%", ln)
                 if m:
                     p = int(m.group(1))
-                    return "Critique" if p < 15 else "Avertissement" if p < 30 else "Normal"
+                    used = 100 - p
+                    label = "Critique" if p < 15 else "Avertissement" if p < 30 else "Normal"
+                    return f"{label} ({used}%)"
     except Exception: pass
     return "—"
 
@@ -2000,16 +2097,16 @@ def _top_procs(n=6):
     return procs[:n]
 
 def _music_control(cmd):
-    """Contrôle Apple Music ou Spotify."""
+    """Contrôle Apple Music ou Spotify sans passer par System Events."""
     actions = {"prev": "previous track", "play": "playpause", "next": "next track"}
     action  = actions.get(cmd, "playpause")
-    for player in ("Music", "Spotify"):
-        script = (f'tell application "System Events"\n'
-                  f'    if name of every process contains "{player}" then\n'
-                  f'        tell application "{player}" to {action}\n'
-                  f'    end if\nend tell')
+    for app_name, proc_name in (("Music", "Music"), ("Spotify", "Spotify")):
+        if subprocess.run(["pgrep", "-x", proc_name], capture_output=True).returncode != 0:
+            continue
         try:
-            subprocess.Popen(["osascript", "-e", script]); return
+            subprocess.Popen(["osascript", "-e",
+                              f'tell application "{app_name}" to {action}'])
+            return
         except Exception:
             pass
 
@@ -2154,7 +2251,56 @@ def _ensure_launchagent():
 
 
 # ─── Application ──────────────────────────────────────────────────────────────
-_app = None; _panel_view = None; _menu = None; _S: dict = {}
+_app = None; _panel_view = None; _panel_win = None; _menu = None; _S: dict = {}
+
+class _MenuDelegate(NSObject):
+    """Delegate NSMenu : annule immédiatement le menu et affiche un NSPanel."""
+    _nsitem  = None
+    _panel   = None
+    _view    = None
+    _monitor = None
+
+    def menuWillOpen_(self, menu):
+        # Annuler le menu AVANT qu'il entre dans son event-tracking loop
+        menu.cancelTracking()
+        # Montrer/cacher le panel après que le menu soit fermé
+        from Foundation import NSTimer as _T
+        _T.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            0.0, self, "togglePanel:", None, False)
+
+    def togglePanel_(self, _):
+        if self._panel and self._panel.isVisible():
+            self._panel.orderOut_(None)
+            if self._monitor:
+                NSEvent.removeMonitor_(self._monitor)
+                self._monitor = None
+        else:
+            self._showPanel()
+
+    def _showPanel(self):
+        if not self._panel or not self._nsitem: return
+        btn = self._nsitem.button()
+        btn_rect    = btn.convertRect_toView_(btn.bounds(), None)
+        screen_rect = btn.window().convertRectToScreen_(btn_rect)
+        ph = PH_BY_TAB.get(getattr(self._view, '_tab', 'sys'), 520)
+        panel_x = screen_rect.origin.x + screen_rect.size.width / 2 - PW / 2
+        panel_y = screen_rect.origin.y - ph - 4
+        from AppKit import NSScreen
+        sw = NSScreen.mainScreen().frame().size.width
+        panel_x = max(4.0, min(panel_x, sw - PW - 4))
+        self._panel.setContentSize_(NSMakeSize(PW, ph))
+        self._view.setFrame_(NSMakeRect(0, 0, PW, ph))
+        self._panel.setFrameOrigin_(NSMakePoint(panel_x, panel_y))
+        self._panel.makeKeyAndOrderFront_(None)
+        def _outside(event):
+            if self._panel and self._panel.isVisible():
+                self._panel.orderOut_(None)
+            if self._monitor:
+                NSEvent.removeMonitor_(self._monitor)
+                self._monitor = None
+        self._monitor = NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
+            1 << 1, _outside)
+
 
 class MacMonitorPro(rumps.App):
 
@@ -2213,6 +2359,13 @@ class MacMonitorPro(rumps.App):
         self._focus   = None; self._focus_t   = 0.0
         self._wtimes  = [];   self._wtimes_t  = 0.0
 
+        # Speedtest
+        self._stest_dl    = 0.0   # bits/s
+        self._stest_ul    = 0.0
+        self._stest_rtt   = 0.0   # ms
+        self._stest_state = "idle"  # idle | running | done | error
+        self._stest_t     = 0.0   # dernière mesure
+
         self._last_icon_key = None
         self._last_icon_img = None
         self._setup_done = False
@@ -2228,19 +2381,37 @@ class MacMonitorPro(rumps.App):
         except AttributeError: return
         self._setup_done = True; timer.stop()
 
-        global _panel_view, _menu
-        view        = PanelView.alloc().initWithFrame_(NSMakeRect(0, 0, PW, PH_BY_TAB["sys"]))
+        global _panel_view, _panel_win, _menu
+
+        # Vue contenu dans un NSPanel (pas de freeze NSMenu)
+        view = PanelView.alloc().initWithFrame_(NSMakeRect(0, 0, PW, PH_BY_TAB["sys"]))
         _panel_view = view
 
-        item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("",None,"")
-        item.setView_(view)
+        panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+            NSMakeRect(0, 0, PW, PH_BY_TAB["sys"]), 128, 2, False)
+        panel.setContentView_(view)
+        panel.setLevel_(8)
+        panel.setOpaque_(False)
+        panel.setHasShadow_(True)
+        from AppKit import NSColor as _NC
+        panel.setBackgroundColor_(_NC.clearColor())
+        panel.setAppearance_(NSAppearance.appearanceNamed_("NSAppearanceNameDarkAqua"))
+        _panel_win = panel
+
+        # NSMenu vide — sert uniquement à détecter le clic sur l'icône
+        delegate = _MenuDelegate.alloc().init()
+        delegate._nsitem = nsitem
+        delegate._panel  = panel
+        delegate._view   = view
+        self._menu_delegate = delegate   # strong ref
+
+        dummy_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("", None, "")
         menu = NSMenu.alloc().init()
         menu.setAutoenablesItems_(False)
-        menu.addItem_(item)
-        menu.setAppearance_(NSAppearance.appearanceNamed_("NSAppearanceNameDarkAqua"))
+        menu.addItem_(dummy_item)
+        menu.setDelegate_(delegate)
         _menu = menu
         nsitem.setMenu_(menu)
-        nsitem.setAutosaveName_("com.macmonitor.statusitem")
         nsitem.button().setImagePosition_(2)
 
         rl = NSRunLoop.mainRunLoop()
@@ -2256,7 +2427,9 @@ class MacMonitorPro(rumps.App):
 
     @rumps.timer(0.2)
     def _animate(self, _):
-        self._t     = (self._t + 0.1) % 1.0
+        panel_open = bool(_panel_win and _panel_win.isVisible())
+        step = 0.1 if panel_open else 0.025   # ~1fps icon quand panel fermé
+        self._t     = (self._t + step) % 1.0
         self._blink = ((self._t % 0.35) < 0.06)
         if not self._setup_done: return
         now   = time.time()
@@ -2306,12 +2479,12 @@ class MacMonitorPro(rumps.App):
         _S['dl_hist'] = list(self._dl_hist)
         _S['ul_hist'] = list(self._ul_hist)
         if _panel_view and getattr(_panel_view, '_tab', '') == 'net':
-            _panel_view.setNeedsDisplay_(True)
+            _panel_view.display()
 
     @rumps.timer(2.0)
     def _update_stats(self, _): self._do_stats()
 
-    def _do_stats(self):
+    def _do_stats(self, panel_open=True):
         now = time.time()
         cpu = psutil.cpu_percent(interval=None)
         freq = psutil.cpu_freq()
@@ -2362,25 +2535,51 @@ class MacMonitorPro(rumps.App):
         self._state = ("panic" if cpu >= 80 else "hot" if cpu >= 60
                        else "busy" if cpu >= 35 else "chill")
 
-        if now - self._net_upd    > 30:  self._local_ip, self._gateway = _get_network_info(); self._net_upd = now
-        if now - self._top_last   > 8:   self._top_cache = _top_procs(6); self._top_last = now
-        if now - self._temp_t     > 30:  self._temp  = _get_cpu_temp();   self._temp_t  = now
-        if now - self._music_t    > 8:   self._music = _get_music();      self._music_t = now
-        if now - self._ping_t     > 20:  self._ping  = _get_ping();       self._ping_t  = now
-        if now - self._mpres_t    > 15:  self._mpres = _get_mem_pressure(); self._mpres_t = now
-        if now - self._wifi_t     > 15:  self._wifi  = _get_wifi_info();  self._wifi_t  = now
-        if now - self._bhealth_t  > 300: self._bhealth = _get_batt_health(); self._bhealth_t = now
-        if now - self._gpu_t      > 3:   self._gpu   = _get_gpu_usage();  self._gpu_t   = now
-        if now - self._cal_t      > 300: self._cal   = _get_calendar_events(5); self._cal_t   = now
-        if now - self._weather_t  > 600:
+        def _bg(attr, fn, interval, t_attr=None, *args):
+            """Lance fn() en background si l'intervalle est écoulé."""
+            ta = t_attr or f"_{attr}_t"
+            if now - getattr(self, ta, 0) > interval:
+                setattr(self, ta, now)
+                def _run(a=attr, f=fn, ar=args):
+                    setattr(self, a, f(*ar))
+                threading.Thread(target=_run, daemon=True).start()
+
+        if panel_open:
+            if now - self._net_upd > 30:
+                self._net_upd = now
+                def _fetch_net(app=self):
+                    ip, gw = _get_network_info()
+                    app._local_ip = ip; app._gateway = gw
+                threading.Thread(target=_fetch_net, daemon=True).start()
+            _bg("_top_cache", lambda: _top_procs(6),      8,  "_top_last")
+            _bg("_temp",      _get_cpu_temp,               30)
+            _bg("_ping",      _get_ping,                   20)
+            _bg("_mpres",     _get_mem_pressure,            15)
+            _bg("_wifi",      _get_wifi_info,               15)
+            _bg("_bhealth",   _get_batt_health,             300)
+            _bg("_gpu",       _get_gpu_usage,               3)
+            _bg("_focus",     _get_focus_mode,              10)
+            _bg("_volume",    _get_volume,                  3)
+
+        if now - self._music_t > 3:
+            self._music_t = now
+            def _fetch_music(app=self):
+                m = _get_music(); app._music = m; _S['music'] = m
+            threading.Thread(target=_fetch_music, daemon=True).start()
+        if now - self._cal_t > 300:
+            self._cal_t = now
+            threading.Thread(target=lambda: setattr(self, '_cal', _get_calendar_events(5)),
+                             daemon=True).start()
+        if now - self._wtimes_t > 60:
+            self._wtimes_t = now
+            threading.Thread(target=lambda: setattr(self, '_wtimes', _get_world_times()),
+                             daemon=True).start()
+        if now - self._weather_t > 600:
             self._weather_t = now
             threading.Thread(target=self._fetch_weather, daemon=True).start()
         if now - self._vpn_t > 5:
             self._vpn_t = now
             threading.Thread(target=self._fetch_vpn, daemon=True).start()
-        if now - self._focus_t  > 10:  self._focus  = _get_focus_mode();  self._focus_t = now
-        if now - self._wtimes_t > 60:  self._wtimes = _get_world_times(); self._wtimes_t = now
-        if now - self._volume_t > 3:   self._volume = _get_volume();      self._volume_t = now
 
         freq_s = f"{freq.current:.0f} MHz" if freq else "—"
 
@@ -2417,7 +2616,18 @@ class MacMonitorPro(rumps.App):
             "focus":        self._focus,
             "world_times":  self._wtimes,
             "volume":       self._volume,
+            "stest_dl":     self._stest_dl,
+            "stest_ul":     self._stest_ul,
+            "stest_rtt":    self._stest_rtt,
+            "stest_state":  self._stest_state,
+            "stest_t":      self._stest_t,
         })
+        # Relancer speedtest toutes les 90s si l'onglet réseau est actif
+        tab = getattr(_panel_view, '_tab', '') if _panel_view else ''
+        if tab == "net" and self._stest_state != "running":
+            if time.time() - self._stest_t > 90:
+                self._stest_state = "running"
+                _run_speedtest(self)
         if batt:
             ts = ("∞" if batt.secsleft == psutil.POWER_TIME_UNLIMITED
                   else "…" if batt.secsleft == psutil.POWER_TIME_UNKNOWN
@@ -2429,7 +2639,7 @@ class MacMonitorPro(rumps.App):
             })
         else:
             _S["batt_pct"] = None
-        if _panel_view: _panel_view.setNeedsDisplay_(True)
+        if _panel_view: _panel_view.display()
         self._check_notifs(cpu, vm.percent, batt)
 
     def _fetch_weather(self):
@@ -2437,14 +2647,14 @@ class MacMonitorPro(rumps.App):
         self._weather = result
         _S['weather'] = result
         if _panel_view and getattr(_panel_view, '_tab', '') == 'cal':
-            _panel_view.setNeedsDisplay_(True)
+            _panel_view.display()
 
     def _fetch_vpn(self):
         result = _get_vpn_status()
         self._vpn = result
         _S['vpn'] = result
         if _panel_view and getattr(_panel_view, '_tab', '') == 'net':
-            _panel_view.setNeedsDisplay_(True)
+            _panel_view.display()
 
     def toggle_caff(self):
         if self._caff_proc and self._caff_proc.poll() is None:

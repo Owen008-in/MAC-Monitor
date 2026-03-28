@@ -74,7 +74,7 @@ else
     fi
     if command -v pipx &>/dev/null; then
         pipx install gcalcli 2>/dev/null && ok "gcalcli installé via pipx" \
-            || warn "gcalcli non installé — l'onglet Agenda utilisera Apple Calendar"
+            || warn "gcalcli non installé — l'onglet Utils utilisera Apple Calendar"
     else
         warn "pipx introuvable — gcalcli ignoré (Apple Calendar utilisé à la place)"
     fi
@@ -239,6 +239,6 @@ echo "  • L'icône robot apparaît dans la barre de menu"
 echo "  • Démarre automatiquement à chaque connexion"
 echo "  • MAC Monitor.app dans Applications pour on/off"
 echo ""
-echo "  Google Calendar (optionnel) :"
+echo "  Google Calendar (optionnel, onglet Utils) :"
 echo "  → gcalcli --config-folder ~/.config/gcalcli init"
 echo ""
