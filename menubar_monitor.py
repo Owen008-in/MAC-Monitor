@@ -69,15 +69,16 @@ C_GREEN = _c(0.18, 0.84, 0.40)
 C_ORA   = _c(1.00, 0.62, 0.04)
 C_RED   = _c(1.00, 0.25, 0.22)
 
-C_SYS   = _c(0.30, 0.62, 1.00)   # bleu
-C_NET   = _c(0.18, 0.84, 0.94)   # cyan
-C_CAL   = _c(0.55, 0.42, 1.00)   # violet
-C_PROC  = _c(0.85, 0.85, 0.92)   # blanc cassé
-C_RAM   = _c(0.70, 0.38, 1.00)
-C_DSK   = _c(1.00, 0.58, 0.10)
-C_BAT   = _c(0.18, 0.84, 0.40)
-C_MUS   = _c(1.00, 0.42, 0.72)
-C_WEA   = _c(1.00, 0.78, 0.15)   # météo (or)
+C_SYS   = _c(0.30, 0.62, 1.00)   # bleu — CPU / Process
+C_NET   = _c(0.18, 0.84, 0.94)   # cyan — réseau download
+C_CAL   = _c(0.55, 0.42, 1.00)   # violet — utils tab
+C_PROC  = _c(0.85, 0.85, 0.92)   # blanc cassé — process tab
+C_RAM   = _c(0.28, 0.85, 0.72)   # teal mint — mémoire / MEM%
+C_DSK   = _c(1.00, 0.50, 0.25)   # orange-coral — stockage
+C_BAT   = _c(0.98, 0.78, 0.28)   # amber — batterie / système
+C_MUS   = _c(1.00, 0.42, 0.72)   # rose — musique
+C_UL    = _c(0.78, 0.55, 1.00)   # lavande — upload réseau
+C_WEA   = _c(1.00, 0.78, 0.15)   # or — météo
 
 TAB_COLOR = {"sys": C_SYS, "net": C_NET, "cal": C_CAL, "proc": C_PROC}
 
@@ -474,13 +475,13 @@ class PanelView(NSView):
 
         _draw("↓", PAD + 10, y - 44, C_NET, SF(18, 0.3))
         _draw(dl, PAD + 30, y - 44, C_WHITE, SF(15, -0.2))
-        _draw("↑", PAD + 20 + hw, y - 44, C_ORA, SF(18, 0.3))
+        _draw("↑", PAD + 20 + hw, y - 44, C_UL, SF(18, 0.3))
         _draw(ul, PAD + 40 + hw, y - 44, C_WHITE, SF(15, -0.2))
 
         # Sparklines côte à côte
         sy = y - 80
         _spark(PAD + 10, sy, hw - 5, 22, s.get('dl_hist', []), C_NET)
-        _spark(PAD + 15 + hw, sy, hw - 5, 22, s.get('ul_hist', []), C_ORA)
+        _spark(PAD + 15 + hw, sy, hw - 5, 22, s.get('ul_hist', []), C_UL)
 
         # WiFi + ping
         wy = y - 110
@@ -517,9 +518,9 @@ class PanelView(NSView):
         _bar(PAD + 10, vy - 14, bw - 20, 7, dp, C_DSK)
 
         ioy = vy - 30
-        _draw(f"R  {s.get('disk_r','0 B/s')}", PAD + 10, ioy, C_GREEN, F_SM)
+        _draw(f"R  {s.get('disk_r','0 B/s')}", PAD + 10, ioy, C_NET, F_SM)
         _draw_r(f"W  {s.get('disk_w','0 B/s')}", w - PAD - 10, ioy,
-                C_ORA, F_SM)
+                C_UL, F_SM)
 
         y -= 112 + 18
 
@@ -531,8 +532,8 @@ class PanelView(NSView):
 
         # Bouton relancer (sauf si en cours)
         if st_state != "running" and _app:
-            rbg = (_c(0.30, 0.62, 1.00, 0.25) if self._hover == "stest_run"
-                   else _c(0.30, 0.62, 1.00, 0.10))
+            rbg = (C_NET.colorWithAlphaComponent_(0.25) if self._hover == "stest_run"
+                   else C_NET.colorWithAlphaComponent_(0.10))
             rects["stest_run"] = _btn(w - PAD - 64, y - 18, 64, 16,
                                       "▶ Relancer", rbg, C_NET, r=7)
 
@@ -758,17 +759,18 @@ class PanelView(NSView):
                              pomo_lbl, pomo_bg, pomo_fg, r=9)
 
         flashing = time.time() < self._copy_flash
-        copy_bg  = _c(0.18, 0.84, 0.40, 0.28) if flashing else (
+        copy_bg  = C_NET.colorWithAlphaComponent_(0.28) if flashing else (
                    _c(1, 1, 1, 0.12) if self._hover == "copy" else _c(1, 1, 1, 0.06))
         copy_lbl = "✓ Copié" if flashing else "📋 Copier"
-        copy_fg  = C_GREEN if flashing else C_GRAY
+        copy_fg  = C_NET if flashing else C_GRAY
         rects["copy"] = _btn(PAD + (abw + 6) * 2, y - abh, abw, abh,
                              copy_lbl, copy_bg, copy_fg, r=9)
 
-        lock_bg = (_c(1.00, 0.62, 0.04, 0.28) if self._hover == "lock"
+        lock_bg = (_c(1.00, 0.25, 0.22, 0.28) if self._hover == "lock"
                    else _c(1, 1, 1, 0.06))
+        lock_fg = C_RED if self._hover == "lock" else C_GRAY
         rects["lock"] = _btn(PAD + (abw + 6) * 3, y - abh, abw, abh,
-                             "🔒 Lock", lock_bg, C_GRAY, r=9)
+                             "🔒 Lock", lock_bg, lock_fg, r=9)
         y -= abh + 14
 
         # ── Sélecteur d'icône ─────────────────────────
