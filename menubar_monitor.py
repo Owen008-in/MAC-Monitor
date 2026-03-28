@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """MAC Monitor Pro v7 — Interface à onglets, design pro."""
 
-import colorsys, json, math, os, re, subprocess, time, psutil, objc, rumps
+import colorsys, json, math, os, re, subprocess, time, threading, psutil, objc, rumps
+import urllib.request
 from collections import deque
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from Foundation import NSMakeRect, NSMakeSize, NSMakePoint, NSTimer, NSRunLoop, NSObject
 from AppKit import (
@@ -63,6 +65,7 @@ C_RAM   = _c(0.70, 0.38, 1.00)
 C_DSK   = _c(1.00, 0.58, 0.10)
 C_BAT   = _c(0.18, 0.84, 0.40)
 C_MUS   = _c(1.00, 0.42, 0.72)
+C_WEA   = _c(1.00, 0.78, 0.15)   # météo (or)
 
 TAB_COLOR = {"sys": C_SYS, "net": C_NET, "cal": C_CAL, "proc": C_PROC}
 
@@ -257,20 +260,14 @@ class PanelView(NSView):
         y = Y_CONTENT
         if   self._tab == "sys":  self._draw_sys(y, bw, s, w, rects)
         elif self._tab == "net":  self._draw_net(y, bw, s, w)
-        elif self._tab == "cal":  self._draw_cal(y, bw, s, w)
+        elif self._tab == "cal":  self._draw_cal(y, bw, s, w, rects)
         elif self._tab == "proc": self._draw_proc(y, bw, s, w, rects)
 
         self._btn_rects = rects
 
     # ── Header ───────────────────────────────────────────────
     def _draw_header(self, w, h, bw, s, rects):
-        party = s.get('party', False)
-        if party:
-            hue      = (time.time() * 0.4) % 1.0
-            r, g, b  = colorsys.hsv_to_rgb(hue, 0.65, 0.28)
-            hdr_c    = _c(r, g, b, 1.0)
-        else:
-            hdr_c = C_HDR
+        hdr_c = C_HDR
 
         # Fond header (arrondi en haut, carré en bas pour jointure propre)
         hdr_c.setFill()
@@ -284,12 +281,13 @@ class PanelView(NSView):
               PAD, h - HDR_H + 8, C_GRAY, F_SM)
 
         # Titre
-        title = "✦ MAC Monitor ✦" if party else "MAC Monitor"
-        tcol  = _c(1.0, 0.95, 0.4, 1.0) if party else C_WHITE
-        _draw_c(title, w / 2, h - HDR_H + 18, tcol, F_TITLE)
-        if not party:
-            _draw_r("Pro", w - PAD - 22, h - HDR_H + 18,
-                    _c(1, 1, 1, 0.28), F_SM)
+        _draw_c("MAC Monitor", w / 2, h - HDR_H + 18, C_WHITE, F_TITLE)
+        focus = s.get('focus')
+        if focus:
+            flbl = "🎯 DND" if focus == "Ne pas déranger" else f"🎯 {focus[:8]}"
+            _draw_r(flbl, w - PAD - 22, h - HDR_H + 18, C_CAL, F_SM)
+        else:
+            _draw_r("Pro", w - PAD - 22, h - HDR_H + 18, _c(1, 1, 1, 0.28), F_SM)
 
         # Bouton × (quitter)
         qx, qy = w - PAD - 17, h - HDR_H + 8
@@ -376,12 +374,17 @@ class PanelView(NSView):
             _draw_r(f"{gpu}%", w - PAD - 10, gy,
                     C_SYS.colorWithAlphaComponent_(0.80), F_MONO)
 
-        y -= cpu_card_h + 22
+        y -= cpu_card_h + 18
 
         # ── RAM Card ──────────────────────────────────
         mem_pres = s.get('mem_pressure', '—')
-        pres_col = (C_RED    if mem_pres == "Critique"      else
-                    C_ORA    if mem_pres == "Avertissement"  else C_GREEN)
+        # Couleur basée sur pression système ET usage RAM réel
+        if mem_pres == "Critique" or ram >= 92:
+            pres_col = C_RED
+        elif mem_pres == "Avertissement" or ram >= 80:
+            pres_col = C_ORA
+        else:
+            pres_col = C_GREEN
         _card(PAD, y, bw, 98, C_RAM)
         _section_label(PAD + 10, y - 14, "MÉMOIRE", C_RAM)
         if mem_pres != '—':
@@ -395,11 +398,13 @@ class PanelView(NSView):
         _bar(PAD + 10, vy - 14, bw - 20, 7, ram, C_RAM)
         _draw(s.get('ram_info', ''), PAD + 10, vy - 28, C_GRAY, F_SM)
 
-        y -= 98 + 22
+        y -= 98 + 18
 
         # ── Batterie / Système Card ────────────────────
-        has_b = bpct is not None
-        bc_h  = 88 if has_b else 46
+        has_b  = bpct is not None
+        wtimes = s.get('world_times', [])
+        wt_h   = 18 if wtimes else 0
+        bc_h   = (88 if has_b else 46) + wt_h
         _card(PAD, y, bw, bc_h, C_BAT, alpha=0.06)
         _section_label(PAD + 10, y - 14, "SYSTÈME", C_BAT)
         _draw_r(f"⏱ {s.get('uptime','—')}", w - PAD - 10, y - 14,
@@ -407,25 +412,27 @@ class PanelView(NSView):
         if has_b:
             bp   = bpct
             icon = "⚡" if s.get('batt_plug') else "🔋"
-            # Ligne 1 : icône + pourcentage coloré
             bp_col = C_GREEN if bp > 50 else C_ORA if bp > 20 else C_RED
             _draw(f"{icon}  {bp:.0f}%", PAD + 10, y - 32, bp_col, F_INFO)
-            # Ligne 2 : barre pleine largeur
             _bar(PAD + 10, y - 46, bw - 20, 8, bp, C_BAT)
-            # Ligne 3 : temps restant (gauche) + santé (droite)
             batt_t = s.get('batt_time', '')
             _draw(batt_t, PAD + 10, y - 62, C_GRAY, F_SM)
             bh = s.get('batt_health', -1)
             if bh > 0:
                 hc = C_GREEN if bh >= 80 else C_ORA if bh >= 60 else C_RED
                 _draw_r(f"Santé {bh}%", w - PAD - 10, y - 62, hc, F_SM)
-            # Ligne 4 : mini barre santé visuelle
             if bh > 0:
                 _bar(PAD + 10, y - 76, bw - 20, 4, bh,
                      C_GREEN if bh >= 80 else C_ORA if bh >= 60 else C_RED)
         else:
             _draw("Pas de batterie détectée", PAD + 10, y - 32,
                   _c(1, 1, 1, 0.25), F_SM)
+        # Fuseaux horaires (en bas de la card, sous tout le contenu batterie)
+        if wtimes:
+            base_y = y - bc_h + 10   # 10px depuis le bas de la card
+            _sep(base_y + 11, PAD + 10, PAD + bw - 10)
+            tz_txt = "   ·   ".join(f"{lbl} {t}" for lbl, t in wtimes[:3])
+            _draw_c(tz_txt, w / 2, base_y, _c(1, 1, 1, 0.30), SF(9, 0.0))
 
     # ── Page 2 : Réseau ──────────────────────────────────────
     def _draw_net(self, y, bw, s, w):
@@ -435,8 +442,10 @@ class PanelView(NSView):
         ping = s.get('ping', '—')
         ssid = s.get('wifi_ssid', '')
         rssi = s.get('wifi_rssi', 0)
+        vpn  = s.get('vpn')
 
-        _card(PAD, y, bw, 146, C_NET)
+        net_h = 164 if vpn else 146
+        _card(PAD, y, bw, net_h, C_NET)
         _section_label(PAD + 10, y - 14, "RÉSEAU", C_NET)
         hdr = "  ".join(filter(None, [ip, f"GW {gw}" if gw else ""]))
         _draw_r(hdr, w - PAD - 10, y - 14,
@@ -457,7 +466,7 @@ class PanelView(NSView):
         _spark(PAD + 10, sy, hw - 5, 22, s.get('dl_hist', []), C_NET)
         _spark(PAD + 15 + hw, sy, hw - 5, 22, s.get('ul_hist', []), C_ORA)
 
-        # WiFi + totaux
+        # WiFi + ping
         wy = y - 110
         _wifi_bars(PAD + 10, wy, rssi)
         if ssid:
@@ -469,7 +478,15 @@ class PanelView(NSView):
         _draw(f"Total  ↓ {s.get('net_total_dl','—')}   ↑ {s.get('net_total_ul','—')}",
               PAD + 10, tot_y, _c(1, 1, 1, 0.28), F_SM)
 
-        y -= 146 + 24
+        # VPN
+        if vpn:
+            _sep(y - 134, PAD + 10, PAD + bw - 10)
+            C_GREEN.setFill()
+            NSBezierPath.bezierPathWithOvalInRect_(
+                NSMakeRect(PAD + 10, y - 150, 7, 7)).fill()
+            _draw(f"VPN  {vpn}", PAD + 22, y - 150, C_GREEN, F_SM)
+
+        y -= net_h + 24
 
         # ── Disque Card ───────────────────────────────
         dp = s.get('disk_pct', 0)
@@ -489,7 +506,7 @@ class PanelView(NSView):
                 C_ORA, F_SM)
 
     # ── Page 3 : Agenda ──────────────────────────────────────
-    def _draw_cal(self, y, bw, s, w):
+    def _draw_cal(self, y, bw, s, w, rects):
         events = s.get('cal_events', [])
         n_ev   = max(len(events), 1)
         cal_h  = n_ev * 26 + 36
@@ -533,26 +550,46 @@ class PanelView(NSView):
 
         # ── Musique Card ──────────────────────────────
         music = s.get('music', '')
-        _card(PAD, y, bw, 62, C_MUS, alpha=0.06)
+        _card(PAD, y, bw, 84, C_MUS, alpha=0.06)
         _section_label(PAD + 10, y - 14, "MUSIQUE", C_MUS)
         if music:
             _draw_r("♪", w - PAD - 10, y - 14,
                     C_MUS.colorWithAlphaComponent_(0.80), F_SM)
 
         if music:
-            # Titre
-            parts = music.split(" — ", 1)
+            parts  = music.split(" — ", 1)
             track  = parts[0] if parts else music
             artist = parts[1] if len(parts) > 1 else ""
-            t_max  = 30
-            if len(track) > t_max: track = track[:t_max - 1] + "…"
-            _draw(track,  PAD + 10, y - 36, C_WHITE, F_INFO)
+            if len(track)  > 28: track  = track[:27]  + "…"
+            if len(artist) > 32: artist = artist[:31] + "…"
+            _draw(track,  PAD + 10, y - 32, C_WHITE, F_INFO)
             if artist:
-                a_max = 34
-                if len(artist) > a_max: artist = artist[:a_max - 1] + "…"
-                _draw(artist, PAD + 10, y - 52, C_GRAY, F_SM)
+                _draw(artist, PAD + 10, y - 46, C_GRAY, F_SM)
         else:
-            _draw("—", PAD + 10, y - 36, _c(1, 1, 1, 0.20), F_INFO)
+            _draw("—", PAD + 10, y - 32, _c(1, 1, 1, 0.20), F_INFO)
+
+        # Boutons prev / play / next
+        mbw = (bw - 24) // 3
+        _btn(PAD + 8,             y - 74, mbw, 22, "◀◀  Préc",
+             _c(1, 1, 1, 0.08), C_GRAY, r=7)
+        _btn(PAD + 8 + mbw + 4,   y - 74, mbw, 22, "⏯  Play",
+             _c(1, 1, 1, 0.08), C_MUS,  r=7)
+        _btn(PAD + 8 + (mbw+4)*2, y - 74, mbw, 22, "Suiv  ▶▶",
+             _c(1, 1, 1, 0.08), C_GRAY, r=7)
+        rects["music_prev"] = NSMakeRect(PAD + 8,             y - 74, mbw, 22)
+        rects["music_play"] = NSMakeRect(PAD + 8 + mbw + 4,   y - 74, mbw, 22)
+        rects["music_next"] = NSMakeRect(PAD + 8 + (mbw+4)*2, y - 74, mbw, 22)
+
+        y -= 84 + 18
+
+        # ── Météo Card ────────────────────────────────
+        weather = s.get('weather', '')
+        _card(PAD, y, bw, 58, C_WEA, alpha=0.06)
+        _section_label(PAD + 10, y - 14, "MÉTÉO", C_WEA)
+        if weather:
+            _draw(weather, PAD + 10, y - 36, C_WHITE, SF(14, 0.0))
+        else:
+            _draw("Chargement…", PAD + 10, y - 36, _c(1, 1, 1, 0.20), F_INFO)
 
     # ── Page 4 : Process ─────────────────────────────────────
     def _draw_proc(self, y, bw, s, w, rects):
@@ -599,13 +636,13 @@ class PanelView(NSView):
 
         # ── Boutons d'action ──────────────────────────
         abh = 34
-        abw = int((bw - 12) / 3)
+        abw = int((bw - 18) / 4)
 
         caff  = _app._caff_proc is not None and _app._caff_proc.poll() is None \
                 if _app else False
         pomo  = (_app._pomo_end > 0) if _app else False
 
-        caff_lbl = "💤 Veille OFF" if caff else "💤 Veille"
+        caff_lbl = "💤 OFF" if caff else "💤 Veille"
         caff_bg  = (_c(0.18,0.84,0.40, 0.28) if self._hover == "caff" else
                     _c(0.18,0.84,0.40, 0.16) if caff else _c(1,1,1, 0.06))
         caff_fg  = C_GREEN if caff else C_GRAY
@@ -616,7 +653,7 @@ class PanelView(NSView):
             left = max(0.0, _app._pomo_end - time.time())
             pomo_lbl = f"⏰ {int(left)//60:02d}:{int(left)%60:02d}"
         else:
-            pomo_lbl = "⏰ Pomodoro"
+            pomo_lbl = "⏰ Pomo"
         pomo_bg = (_c(0.30,0.62,1.00, 0.28) if self._hover == "pomo" else
                    _c(0.30,0.62,1.00, 0.16) if pomo else _c(1,1,1, 0.06))
         pomo_fg = C_SYS if pomo else C_GRAY
@@ -630,6 +667,11 @@ class PanelView(NSView):
         copy_fg  = C_GREEN if flashing else C_GRAY
         rects["copy"] = _btn(PAD + (abw + 6) * 2, y - abh, abw, abh,
                              copy_lbl, copy_bg, copy_fg, r=9)
+
+        lock_bg = (_c(1.00, 0.62, 0.04, 0.28) if self._hover == "lock"
+                   else _c(1, 1, 1, 0.06))
+        rects["lock"] = _btn(PAD + (abw + 6) * 3, y - abh, abw, abh,
+                             "🔒 Lock", lock_bg, C_GRAY, r=9)
         y -= abh + 14
 
         # ── Quitter ───────────────────────────────────
@@ -655,14 +697,12 @@ class PanelView(NSView):
         pt = self.convertPoint_fromView_(event.locationInWindow(), None)
         h  = self.bounds().size.height
 
-        # Clic header → party mode ou bouton ×
+        # Clic header → bouton × uniquement
         if pt.y >= h - HDR_H:
             r = (self._btn_rects or {}).get("quit")
             if r and (r.origin.x <= pt.x <= r.origin.x + r.size.width and
                       r.origin.y <= pt.y <= r.origin.y + r.size.height):
                 if _menu: _menu.cancelTracking()
-                return
-            if _app: _app._party_end = time.time() + 5.0
             return
 
         # Clic onglets
@@ -689,13 +729,16 @@ class PanelView(NSView):
                 if name in ("quit", "quit2"):
                     if _menu: _menu.cancelTracking()
                 elif _app:
-                    if   name == "caff":    _app.toggle_caff()
-                    elif name == "pomo":    _app.toggle_pomo()
+                    if   name == "caff":       _app.toggle_caff()
+                    elif name == "pomo":       _app.toggle_pomo()
                     elif name == "copy":
                         _app.copy_stats()
                         self._copy_flash = time.time() + 2.0
-                    elif name == "act_cpu":
-                        subprocess.Popen(["open", "-a", "Activity Monitor"])
+                    elif name == "act_cpu":    subprocess.Popen(["open", "-a", "Activity Monitor"])
+                    elif name == "lock":       _lock_screen()
+                    elif name == "music_prev": _music_control("prev")
+                    elif name == "music_play": _music_control("play")
+                    elif name == "music_next": _music_control("next")
                 self.setNeedsDisplay_(True)
                 break
 
@@ -735,12 +778,8 @@ _STATE_COL = {
     "panic": (1.00, 0.20, 0.20),
 }
 
-def draw_character(t, state, blink, size=24, party=False):
-    if party:
-        rc, gc, bc = colorsys.hsv_to_rgb((t * 2) % 1.0, 1.0, 1.0)
-        anim = "chill"
-    else:
-        rc, gc, bc = _STATE_COL[state]; anim = state
+def draw_character(t, state, blink, size=24):
+    rc, gc, bc = _STATE_COL[state]; anim = state
 
     main  = _c(rc,        gc,        bc,        1.0)
     dark  = _c(rc * 0.45, gc * 0.45, bc * 0.45, 1.0)
@@ -993,9 +1032,11 @@ def _get_wifi_info():
 def _get_batt_health():
     try:
         r = subprocess.run(["ioreg","-l","-n","AppleSmartBattery"],
-                           capture_output=True,text=True,timeout=3)
-        mx = re.search(r'"MaxCapacity"\s*=\s*(\d+)', r.stdout)
-        ds = re.search(r'"DesignCapacity"\s*=\s*(\d+)', r.stdout)
+                           capture_output=True, timeout=3)
+        # ioreg contient des données binaires → décoder avec remplacement
+        out = r.stdout.decode("utf-8", errors="replace")
+        mx = re.search(r'"AppleRawMaxCapacity"\s*=\s*(\d+)', out)
+        ds = re.search(r'"DesignCapacity"\s*=\s*(\d+)', out)
         if mx and ds:
             return min(100, int(int(mx.group(1)) / int(ds.group(1)) * 100))
     except Exception: pass
@@ -1004,8 +1045,9 @@ def _get_batt_health():
 def _get_gpu_usage():
     try:
         r = subprocess.run(["ioreg","-r","-c","IOAccelerator","-d","2"],
-                           capture_output=True,text=True,timeout=2)
-        m = re.search(r'"GPU Activity"\s*=\s*(\d+)', r.stdout)
+                           capture_output=True, timeout=2)
+        out = r.stdout.decode("utf-8", errors="replace")
+        m = re.search(r'"GPU Activity"\s*=\s*(\d+)', out)
         if m: return int(m.group(1))
     except Exception: pass
     return -1
@@ -1113,6 +1155,130 @@ def _top_procs(n=6):
     procs.sort(key=lambda x: x["cpu"], reverse=True)
     return procs[:n]
 
+def _music_control(cmd):
+    """Contrôle Apple Music ou Spotify."""
+    actions = {"prev": "previous track", "play": "playpause", "next": "next track"}
+    action  = actions.get(cmd, "playpause")
+    for player in ("Music", "Spotify"):
+        script = (f'tell application "System Events"\n'
+                  f'    if name of every process contains "{player}" then\n'
+                  f'        tell application "{player}" to {action}\n'
+                  f'    end if\nend tell')
+        try:
+            subprocess.Popen(["osascript", "-e", script]); return
+        except Exception:
+            pass
+
+def _lock_screen():
+    try:
+        import ctypes
+        lib = ctypes.cdll.LoadLibrary(
+            "/System/Library/PrivateFrameworks/login.framework"
+            "/Versions/Current/login")
+        lib.SACLockScreenImmediate()
+    except Exception:
+        pass
+
+def _get_weather():
+    try:
+        req = urllib.request.Request(
+            "https://wttr.in/?format=%c+%t",
+            headers={"User-Agent": "curl/7.79.1"})
+        with urllib.request.urlopen(req, timeout=6) as r:
+            return r.read().decode().strip()
+    except Exception:
+        return ""
+
+def _vpn_iface_connected():
+    """Retourne True si une interface utun/tun/tap a une IP réelle assignée."""
+    import socket as _sock
+    try:
+        for iface, addrs in psutil.net_if_addrs().items():
+            if not iface.startswith(("tun", "tap", "utun")):
+                continue
+            for addr in addrs:
+                if (addr.family == _sock.AF_INET
+                        and addr.address
+                        and not addr.address.startswith("127.")):
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+def _get_vpn_status():
+    """Retourne tous les VPNs actifs : scutil + Tailscale CLI + OpenVPN."""
+    active = []
+
+    # VPNs système (WireGuard, IKEv2, L2TP…) via scutil
+    # Double vérif : scutil (Connected) ET interface utun avec IP
+    try:
+        r = subprocess.run(["scutil", "--nc", "list"],
+                           capture_output=True, text=True, timeout=2)
+        iface_ok = _vpn_iface_connected()
+        for ln in r.stdout.splitlines():
+            if "(Connected)" in ln and "tailscale" not in ln.lower():
+                if not iface_ok:
+                    continue   # scutil dit Connected mais pas d'interface → faux positif
+                m = re.search(r'"([^"]+)"\s*$', ln.strip())
+                active.append(m.group(1)[:18] if m else "VPN")
+    except Exception:
+        pass
+
+    # Tailscale : CLI uniquement (scutil toujours Connected même à l'arrêt)
+    for ts_bin in ("/usr/local/bin/tailscale", "/opt/homebrew/bin/tailscale"):
+        if not os.path.exists(ts_bin):
+            continue
+        try:
+            r = subprocess.run([ts_bin, "status", "--json"],
+                               capture_output=True, text=True, timeout=3)
+            if r.returncode == 0:
+                d = json.loads(r.stdout)
+                if (d.get("BackendState") == "Running"
+                        and d.get("Self", {}).get("Online")):
+                    active.append("Tailscale")
+        except Exception:
+            pass
+        break
+
+    # OpenVPN : process actif ET interface tun/tap avec IP
+    try:
+        has_proc = any("openvpn" in (p.info.get("name") or "").lower()
+                       for p in psutil.process_iter(["name"]))
+        if has_proc and _vpn_iface_connected():
+            active.append("OpenVPN")
+    except Exception:
+        pass
+
+    return "  ·  ".join(active) if active else None
+
+def _get_focus_mode():
+    for path in [
+        os.path.expanduser("~/Library/Preferences/com.apple.notificationcenterui"),
+        os.path.expanduser("~/Library/Preferences/ByHost/com.apple.notificationcenterui"),
+    ]:
+        try:
+            r = subprocess.run(
+                ["defaults", "-currentHost", "read", path, "doNotDisturb"],
+                capture_output=True, text=True, timeout=2)
+            if r.returncode == 0 and r.stdout.strip() == "1":
+                return "Ne pas déranger"
+        except Exception:
+            pass
+    return None
+
+def _get_world_times():
+    now = datetime.now()
+    result = []
+    for label, tz in [("UTC", "UTC"), ("NY", "America/New_York"), ("Tokyo", "Asia/Tokyo")]:
+        try:
+            t = datetime.now(ZoneInfo(tz))
+            result.append((label, t.strftime("%H:%M")))
+        except Exception:
+            pass
+    return result
+
+
 def _ensure_launchagent():
     if not os.path.exists(PLIST_PATH): return
     if subprocess.run(["launchctl","list",PLIST_LABEL],
@@ -1156,7 +1322,6 @@ class MacMonitorPro(rumps.App):
 
         self._caff_proc  = None
         self._pomo_end   = 0.0
-        self._party_end  = 0.0
         self._dl_hi_since = 0.0
 
         # Timer réseau dédié 1 s
@@ -1172,6 +1337,10 @@ class MacMonitorPro(rumps.App):
         self._bhealth = -1; self._bhealth_t = 0.0
         self._gpu   = -1;   self._gpu_t   = 0.0
         self._cal   = [];   self._cal_t   = 0.0
+        self._weather = "";   self._weather_t = 0.0
+        self._vpn     = None; self._vpn_t     = 0.0
+        self._focus   = None; self._focus_t   = 0.0
+        self._wtimes  = [];   self._wtimes_t  = 0.0
 
         self._setup_done = False
         _ensure_launchagent()
@@ -1195,6 +1364,7 @@ class MacMonitorPro(rumps.App):
         menu.setAppearance_(NSAppearance.appearanceNamed_("NSAppearanceNameDarkAqua"))
         _menu = menu
         nsitem.setMenu_(menu)
+        nsitem.setAutosaveName_("com.macmonitor.statusitem")
         nsitem.button().setImagePosition_(2)
 
         rl = NSRunLoop.mainRunLoop()
@@ -1214,8 +1384,7 @@ class MacMonitorPro(rumps.App):
         self._blink = ((self._t % 0.35) < 0.06)
         if not self._setup_done: return
         now   = time.time()
-        party = now < self._party_end
-        img   = draw_character(self._t, self._state, self._blink, party=party)
+        img   = draw_character(self._t, self._state, self._blink)
         btn   = self._nsapp.nsstatusitem.button()
         btn.setImage_(img)
         if self._pomo_end > 0:
@@ -1226,7 +1395,7 @@ class MacMonitorPro(rumps.App):
                 self._notify("pomo", "Pomodoro terminé! 🍅",
                              "25 minutes — prenez une pause ☕")
         else:
-            title = f"  {self._cpu:.0f}%  ↓{_b(self._dl)}/s"
+            title = f" {self._cpu:.0f}%"
         btn.setTitle_(title)
 
     @rumps.timer(1.0)
@@ -1307,7 +1476,15 @@ class MacMonitorPro(rumps.App):
         if now - self._wifi_t     > 15:  self._wifi  = _get_wifi_info();  self._wifi_t  = now
         if now - self._bhealth_t  > 300: self._bhealth = _get_batt_health(); self._bhealth_t = now
         if now - self._gpu_t      > 3:   self._gpu   = _get_gpu_usage();  self._gpu_t   = now
-        if now - self._cal_t      > 300: self._cal   = _get_calendar_events(5); self._cal_t = now
+        if now - self._cal_t      > 300: self._cal   = _get_calendar_events(5); self._cal_t   = now
+        if now - self._weather_t  > 600:
+            self._weather_t = now
+            threading.Thread(target=self._fetch_weather, daemon=True).start()
+        if now - self._vpn_t > 5:
+            self._vpn_t = now
+            threading.Thread(target=self._fetch_vpn, daemon=True).start()
+        if now - self._focus_t  > 10:  self._focus  = _get_focus_mode();  self._focus_t = now
+        if now - self._wtimes_t > 60:  self._wtimes = _get_world_times(); self._wtimes_t = now
 
         freq_s = f"{freq.current:.0f} MHz" if freq else "—"
 
@@ -1337,7 +1514,10 @@ class MacMonitorPro(rumps.App):
             "top_procs":    self._top_cache,
             "batt_health":  self._bhealth,
             "cal_events":   self._cal,
-            "party":        time.time() < self._party_end,
+            "weather":      self._weather,
+            "vpn":          self._vpn,
+            "focus":        self._focus,
+            "world_times":  self._wtimes,
         })
         if batt:
             ts = ("∞" if batt.secsleft == psutil.POWER_TIME_UNLIMITED
@@ -1352,6 +1532,20 @@ class MacMonitorPro(rumps.App):
             _S["batt_pct"] = None
         if _panel_view: _panel_view.setNeedsDisplay_(True)
         self._check_notifs(cpu, vm.percent, batt)
+
+    def _fetch_weather(self):
+        result = _get_weather()
+        self._weather = result
+        _S['weather'] = result
+        if _panel_view and getattr(_panel_view, '_tab', '') == 'cal':
+            _panel_view.setNeedsDisplay_(True)
+
+    def _fetch_vpn(self):
+        result = _get_vpn_status()
+        self._vpn = result
+        _S['vpn'] = result
+        if _panel_view and getattr(_panel_view, '_tab', '') == 'net':
+            _panel_view.setNeedsDisplay_(True)
 
     def toggle_caff(self):
         if self._caff_proc and self._caff_proc.poll() is None:
