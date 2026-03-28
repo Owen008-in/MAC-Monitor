@@ -16,7 +16,6 @@ from AppKit import (
 
 # ─── Dimensions ───────────────────────────────────────────────────────────────
 PW          = 320
-PH          = 510
 PAD         = 20
 INNER_W     = PW - PAD * 2          # 280
 CORNER      = 14
@@ -24,13 +23,25 @@ HDR_H       = 52
 TAB_H       = 36
 TAB_COUNT   = 4
 TAB_W       = INNER_W / TAB_COUNT   # 70
-
-# Zone contenu : de (PH - HDR_H - 8 - TAB_H - 12) à 14
-Y_CONTENT   = PH - HDR_H - 8 - TAB_H - 14   # ≈ 396
 Y_FLOOR     = 14
+
+# Hauteur par onglet (calculée pour que tout le contenu rentre)
+PH_BY_TAB = {
+    "sys":  520,   # cpu(136) + gap + ram(116) + gap + batt+tz(106) + marges
+    "net":  440,   # réseau(188) + disque(112) + marges
+    "cal":  490,   # calendrier(190) + musique(102) + météo(58) + marges
+    "proc": 760,   # 10 procs(284) + volume(36) + actions(48) + icônes(160) + thèmes(54) + quitter(34)
+}
+PH          = PH_BY_TAB["sys"]   # hauteur initiale (onglet sys par défaut)
+
+def _y_content(ph):
+    """Coordonnée y de départ du contenu pour une hauteur de panel donnée."""
+    return ph - HDR_H - 8 - TAB_H - 14
 
 HIST        = 60
 NOTIF_CD    = 300
+TITLE_MODES = ["cpu", "ram", "net", "clock"]
+_TITLE_MODE = "cpu"
 POMO_DUR    = 25 * 60
 DL_HI       = 1_000_000
 DL_LO       =   100_000
@@ -216,6 +227,7 @@ class PanelView(NSView):
     _tab: str        = "sys"
     _top_mode: str   = "cpu"
     _hover: str      = ""
+    _icon_hover: str = ""
     _btn_rects: dict = None
     _tab_rects: dict = None
     _copy_flash: float = 0.0   # timestamp jusqu'où afficher "✓ Copié"
@@ -236,8 +248,9 @@ class PanelView(NSView):
     def drawRect_(self, _):
         s = _S
         if not s: return
-        w, h = PW, PH
-        bw   = INNER_W
+        w  = PW
+        h  = int(self.bounds().size.height)
+        bw = INNER_W
         rects = {}
 
         # Fond
@@ -257,7 +270,7 @@ class PanelView(NSView):
         self._tab_rects = tab_rects
 
         # Contenu
-        y = Y_CONTENT
+        y = _y_content(h)
         if   self._tab == "sys":  self._draw_sys(y, bw, s, w, rects)
         elif self._tab == "net":  self._draw_net(y, bw, s, w)
         elif self._tab == "cal":  self._draw_cal(y, bw, s, w, rects)
@@ -282,6 +295,7 @@ class PanelView(NSView):
 
         # Titre
         _draw_c("MAC Monitor", w / 2, h - HDR_H + 18, C_WHITE, F_TITLE)
+        rects["title_mode"] = NSMakeRect(PAD + 40, h - HDR_H + 8, w - PAD*2 - 60, HDR_H - 16)
         focus = s.get('focus')
         if focus:
             flbl = "🎯 DND" if focus == "Ne pas déranger" else f"🎯 {focus[:8]}"
@@ -353,6 +367,9 @@ class PanelView(NSView):
         _big_value(PAD + 10, vy, cpu, "%", C_SYS)
         _spark(PAD + 90, vy + 2, bw - 100, 28,
                s.get('cpu_hist', []), C_SYS)
+        # Historique long (6 min)
+        _spark(PAD + 90, vy - 12, bw - 100, 14,
+               s.get('cpu_hist_long', []), C_SYS.colorWithAlphaComponent_(0.45))
 
         # Barre
         _bar(PAD + 10, vy - 14, bw - 20, 7, cpu, C_SYS)
@@ -620,19 +637,59 @@ class PanelView(NSView):
                           key=lambda p: p['mem'] if self._top_mode == 'mem'
                                         else p['cpu'],
                           reverse=True)
-        for i, p in enumerate(sorted_p):
-            py  = y - 36 - i * 22
-            cp  = p['cpu']; mp = p['mem']
-            cc  = C_RED if cp > 50 else C_ORA if cp > 20 else C_WHITE
-            mc  = C_RED if mp > 10 else C_ORA if mp > 5  else \
-                  C_RAM.colorWithAlphaComponent_(0.75)
-            _draw(p['name'][:24], PAD + 10, py, C_WHITE, F_MONO)
+        for i, proc_entry in enumerate(sorted_p):
+            py   = y - 36 - i * 22
+            cp   = proc_entry['cpu']; mp = proc_entry['mem']
+            pid  = proc_entry.get('pid', 0)
+            cc   = C_RED if cp > 50 else C_ORA if cp > 20 else C_WHITE
+            mc   = C_RED if mp > 10 else C_ORA if mp > 5  else \
+                   C_RAM.colorWithAlphaComponent_(0.75)
+            kill_key = f"kill_{pid}"
+            hovering = (self._hover == kill_key)
+            if hovering:
+                _c(1, 0.25, 0.22, 0.12).setFill()
+                NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+                    NSMakeRect(PAD + 4, py - 4, bw - 8, 18), 4, 4).fill()
+            _draw(proc_entry['name'][:20], PAD + 10, py, C_WHITE, F_MONO)
             _draw_r(f"{cp:5.1f}", w - PAD - 10,      py, cc, F_MONO)
             _draw_r(f"{mp:5.1f}", w - PAD - 10 - 44, py, mc, F_MONO)
+            # Bouton kill (×) affiché au survol
+            kill_bg = _c(1, 0.25, 0.22, 0.30) if hovering else _c(0,0,0,0)
+            rects[kill_key] = _btn(PAD + 4, py - 3, 16, 16, "×" if hovering else "", kill_bg, C_RED, r=4)
             if i < n_p - 1:
                 _sep(py - 5, PAD + 10, PAD + bw - 10)
 
         y -= proc_h + 24
+
+        # ── Volume ────────────────────────────────────
+        vol = s.get('volume', -1)
+        if vol >= 0:
+            vh = 28
+            _card(PAD, y, bw, vh, C_SYS, alpha=0.05)
+            _draw(f"{'🔇' if vol == 0 else '🔊'}", PAD + 10, y - 20, C_WHITE, SF(11, 0.0))
+            _draw("Volume", PAD + 28, y - 20, C_GRAY, F_SM)
+            # Barre volume
+            bar_x = PAD + 75; bar_w = bw - 75 - 90; bar_h = 5
+            bar_y = y - 19
+            _c(1,1,1,0.08).setFill()
+            NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+                NSMakeRect(bar_x, bar_y, bar_w, bar_h), 2.5, 2.5).fill()
+            if vol > 0:
+                fw = bar_w * vol / 100
+                vc = C_RED if vol > 80 else C_ORA if vol > 60 else C_SYS
+                vc.setFill()
+                NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+                    NSMakeRect(bar_x, bar_y, fw, bar_h), 2.5, 2.5).fill()
+            _draw_r(f"{vol}%", bar_x + bar_w + 38, y - 20, C_GRAY, F_SM)
+            # Boutons − +
+            bsz = 22
+            for btn_name, lbl, bx in (
+                ("vol_dn", "−", bar_x + bar_w + 40),
+                ("vol_up", "+", bar_x + bar_w + 64),
+            ):
+                hbg = _c(1,1,1,0.14) if self._hover == btn_name else _c(1,1,1,0.07)
+                rects[btn_name] = _btn(bx, y - vh + 3, bsz, bsz, lbl, hbg, C_WHITE, r=5)
+            y -= vh + 8
 
         # ── Boutons d'action ──────────────────────────
         abh = 34
@@ -674,6 +731,81 @@ class PanelView(NSView):
                              "🔒 Lock", lock_bg, C_GRAY, r=9)
         y -= abh + 14
 
+        # ── Sélecteur d'icône ─────────────────────────
+        n_cols   = 5
+        icon_bw  = int((bw - (n_cols - 1) * 3) / n_cols)
+        icon_bh  = 34
+        icon_gap = 3
+        n_rows   = (len(ICON_STYLES) + n_cols - 1) // n_cols
+        # sel_h: couvre label(14) + gap(6) + lignes + padding(6)
+        sel_h    = 44 + n_rows * (icon_bh + icon_gap) - icon_gap
+        _card(PAD, y, bw, sel_h, C_PROC, alpha=0.04)
+        _section_label(PAD + 10, y - 14, "ICÔNE MENUBAR", C_PROC)
+        # row 0 top = y-18 (6px sous le bas du label à y-4), pas d'overlap
+        for idx, (style, label) in enumerate(zip(ICON_STYLES, ICON_LABELS)):
+            col_i = idx % n_cols
+            row_i = idx // n_cols
+            ix = PAD + col_i * (icon_bw + icon_gap)
+            iy = y - 38 - row_i * (icon_bh + icon_gap)
+            selected = (_ICON_STYLE == style)
+            hov      = (self._icon_hover == style)
+            if selected:
+                ibg = C_PROC.colorWithAlphaComponent_(0.30)
+                ifg = C_PROC
+            elif hov:
+                ibg = _c(1, 1, 1, 0.12)
+                ifg = C_GRAY
+            else:
+                ibg = _c(1, 1, 1, 0.05)
+                ifg = _c(1, 1, 1, 0.28)
+            # Fond du bouton
+            ibg.setFill()
+            NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+                NSMakeRect(ix, iy, icon_bw, icon_bh), 5, 5).fill()
+            if selected:
+                ifg.colorWithAlphaComponent_(0.5).setStroke()
+                brd = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+                    NSMakeRect(ix, iy, icon_bw, icon_bh), 5, 5)
+                brd.setLineWidth_(0.8); brd.stroke()
+            # Mini icône
+            t_now = (_app._t if _app else 0.0)
+            st_now = (_app._state if _app else "chill")
+            bl_now = (_app._blink if _app else False)
+            try:
+                mini = _ICON_DRAW.get(style, _draw_robot)(t_now, st_now, bl_now, size=16)
+                mini.drawInRect_fromRect_operation_fraction_(
+                    NSMakeRect(ix + (icon_bw - 16) / 2, iy + 5, 16, 16),
+                    NSMakeRect(0, 0, 16, 16), 2, 1.0)
+            except Exception:
+                pass
+            # Label sous l'icône
+            _draw_c(label, ix + icon_bw/2, iy + 1, ifg, SF(7.5, 0.0))
+            rects[f"icon_{style}"] = NSMakeRect(ix, iy, icon_bw, icon_bh)
+        y -= sel_h + 8
+
+        # ── Thème ─────────────────────────────────────
+        th_bw = int((bw - (len(THEMES) - 1) * 3) / len(THEMES))
+        th_h  = 22
+        _section_label(PAD + 10, y - 14, "THÈME", C_PROC)
+        for ti, (theme, tlbl) in enumerate(zip(THEMES, THEME_LABELS)):
+            tx = PAD + ti * (th_bw + 3)
+            ty = y - 38
+            tp = _THEME_PALETTES[theme]
+            is_sel = (_THEME == theme)
+            tbg = _c(*tp["bg"], 1.0) if is_sel else _c(*tp["bg"], 0.7)
+            tac = _c(*tp["acc"], 1.0)
+            tbg.setFill()
+            NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+                NSMakeRect(tx, ty, th_bw, th_h), 5, 5).fill()
+            if is_sel:
+                tac.colorWithAlphaComponent_(0.8).setStroke()
+                brd = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+                    NSMakeRect(tx, ty, th_bw, th_h), 5, 5)
+                brd.setLineWidth_(1.2); brd.stroke()
+            _draw_c(tlbl, tx + th_bw/2, ty + (th_h - 11)/2, tac, SF(8.5, 0.3))
+            rects[f"theme_{theme}"] = NSMakeRect(tx, ty, th_bw, th_h)
+        y -= 46 + 8
+
         # ── Quitter ───────────────────────────────────
         qh  = 34
         qbt = y - qh
@@ -697,12 +829,19 @@ class PanelView(NSView):
         pt = self.convertPoint_fromView_(event.locationInWindow(), None)
         h  = self.bounds().size.height
 
-        # Clic header → bouton × uniquement
+        # Clic header → bouton × ou cycle titre
         if pt.y >= h - HDR_H:
             r = (self._btn_rects or {}).get("quit")
             if r and (r.origin.x <= pt.x <= r.origin.x + r.size.width and
                       r.origin.y <= pt.y <= r.origin.y + r.size.height):
                 if _menu: _menu.cancelTracking()
+                return
+            r2 = (self._btn_rects or {}).get("title_mode")
+            if r2 and (r2.origin.x <= pt.x <= r2.origin.x + r2.size.width and
+                       r2.origin.y <= pt.y <= r2.origin.y + r2.size.height):
+                global _TITLE_MODE
+                idx = TITLE_MODES.index(_TITLE_MODE) if _TITLE_MODE in TITLE_MODES else 0
+                _TITLE_MODE = TITLE_MODES[(idx + 1) % len(TITLE_MODES)]
             return
 
         # Clic onglets
@@ -710,6 +849,8 @@ class PanelView(NSView):
             if (r.origin.x <= pt.x <= r.origin.x + r.size.width and
                     r.origin.y <= pt.y <= r.origin.y + r.size.height):
                 self._tab = tab
+                new_ph = PH_BY_TAB.get(tab, 520)
+                self.setFrame_(NSMakeRect(0, 0, PW, new_ph))
                 self.setNeedsDisplay_(True)
                 return
 
@@ -728,6 +869,8 @@ class PanelView(NSView):
                     r.origin.y <= pt.y <= r.origin.y + r.size.height):
                 if name in ("quit", "quit2"):
                     if _menu: _menu.cancelTracking()
+                    from AppKit import NSApplication
+                    NSApplication.sharedApplication().terminate_(None)
                 elif _app:
                     if   name == "caff":       _app.toggle_caff()
                     elif name == "pomo":       _app.toggle_pomo()
@@ -739,24 +882,42 @@ class PanelView(NSView):
                     elif name == "music_prev": _music_control("prev")
                     elif name == "music_play": _music_control("play")
                     elif name == "music_next": _music_control("next")
+                    elif name == "vol_dn": _set_volume(_S.get('volume', 50) - 5)
+                    elif name == "vol_up": _set_volume(_S.get('volume', 50) + 5)
+                    elif name.startswith("kill_"):
+                        pid = int(name[5:])
+                        try:
+                            import signal as _sig
+                            os.kill(pid, _sig.SIGTERM)
+                        except Exception:
+                            pass
+                    elif name.startswith("theme_"):
+                        _save_theme(name[6:])
+                    elif name.startswith("icon_"):
+                        _save_icon_style(name[5:])
                 self.setNeedsDisplay_(True)
                 break
 
     def mouseMoved_(self, event):
         pt = self.convertPoint_fromView_(event.locationInWindow(), None)
-        hv = ""
+        hv = ""; ihv = ""
         for name, r in (self._btn_rects or {}).items():
             if name in ("top_hdr",): continue
             if (r.origin.x <= pt.x <= r.origin.x + r.size.width and
                     r.origin.y <= pt.y <= r.origin.y + r.size.height):
-                hv = name; break
-        if hv != self._hover:
-            self._hover = hv
+                if name.startswith("icon_"):
+                    ihv = name[5:]
+                else:
+                    hv = name
+                break
+        changed = (hv != self._hover or ihv != self._icon_hover)
+        self._hover = hv; self._icon_hover = ihv
+        if changed:
             self.setNeedsDisplay_(True)
 
     def mouseExited_(self, _):
-        if self._hover:
-            self._hover = ""
+        if self._hover or self._icon_hover:
+            self._hover = ""; self._icon_hover = ""
             self.setNeedsDisplay_(True)
 
     def acceptsFirstMouse_(self, _): return True
@@ -778,7 +939,73 @@ _STATE_COL = {
     "panic": (1.00, 0.20, 0.20),
 }
 
-def draw_character(t, state, blink, size=24):
+ICON_STYLES = ["robot", "pulse", "circuit", "terminal", "alien",
+               "astronaut", "cube", "ninja", "cat", "ghost",
+               "skull", "eye", "planet", "flame", "panda"]
+ICON_LABELS = ["Robot", "Pulse", "Circuit", ">_", "Alien",
+               "Astro", "Cube", "Ninja", "Cat", "Ghost",
+               "Skull", "Eye", "Planet", "Flame", "Panda"]
+
+_ICON_STYLE = "robot"
+_STYLE_FILE  = os.path.expanduser("~/.config/macmonitor/style.txt")
+
+THEMES = ["violet", "midnight", "matrix", "sunset", "mono"]
+THEME_LABELS = ["Violet", "Night", "Matrix", "Sunset", "Mono"]
+
+_THEME = "violet"
+_THEME_FILE = os.path.expanduser("~/.config/macmonitor/theme.txt")
+
+_THEME_PALETTES = {
+    "violet":   {"bg": (0.07, 0.06, 0.11), "hdr": (0.10, 0.07, 0.16), "acc": (0.55, 0.42, 1.00)},
+    "midnight": {"bg": (0.04, 0.06, 0.12), "hdr": (0.06, 0.08, 0.20), "acc": (0.30, 0.62, 1.00)},
+    "matrix":   {"bg": (0.03, 0.08, 0.04), "hdr": (0.04, 0.12, 0.06), "acc": (0.18, 0.90, 0.40)},
+    "sunset":   {"bg": (0.12, 0.05, 0.04), "hdr": (0.18, 0.07, 0.05), "acc": (1.00, 0.45, 0.10)},
+    "mono":     {"bg": (0.08, 0.08, 0.10), "hdr": (0.13, 0.13, 0.15), "acc": (0.75, 0.75, 0.80)},
+}
+
+def _load_theme():
+    global _THEME
+    try:
+        with open(_THEME_FILE) as f:
+            s = f.read().strip()
+            if s in THEMES: _THEME = s
+    except Exception:
+        pass
+
+def _save_theme(t):
+    global _THEME, C_BG, C_HDR
+    _THEME = t
+    p = _THEME_PALETTES[t]
+    C_BG  = _c(*p["bg"],  0.99)
+    C_HDR = _c(*p["hdr"], 1.00)
+    try:
+        os.makedirs(os.path.dirname(_THEME_FILE), exist_ok=True)
+        with open(_THEME_FILE, "w") as f: f.write(t)
+    except Exception:
+        pass
+
+def _load_icon_style():
+    global _ICON_STYLE
+    try:
+        with open(_STYLE_FILE) as f:
+            s = f.read().strip()
+            if s in ICON_STYLES:
+                _ICON_STYLE = s
+    except Exception:
+        pass
+
+def _save_icon_style(style):
+    global _ICON_STYLE
+    _ICON_STYLE = style
+    try:
+        os.makedirs(os.path.dirname(_STYLE_FILE), exist_ok=True)
+        with open(_STYLE_FILE, "w") as f:
+            f.write(style)
+    except Exception:
+        pass
+
+
+def _draw_robot(t, state, blink, size=24):
     rc, gc, bc = _STATE_COL[state]; anim = state
 
     main  = _c(rc,        gc,        bc,        1.0)
@@ -934,6 +1161,622 @@ def draw_character(t, state, blink, size=24):
     img.unlockFocus()
     img.setTemplate_(False)
     return img
+
+
+def _draw_pulse(t, state, blink, size=24):
+    """Ligne EKG animée."""
+    rc, gc, bc = _STATE_COL[state]
+    col  = _c(rc, gc, bc, 1.0)
+    spd  = {"chill": 0.55, "busy": 0.85, "hot": 1.15, "panic": 1.7}[state]
+    amp  = {"chill": 3.5,  "busy": 5.5,  "hot": 8.5,  "panic": 11.5}[state]
+    img  = NSImage.alloc().initWithSize_(NSMakeSize(size, size))
+    img.lockFocus()
+    NSColor.clearColor().setFill(); NSRectFill(NSMakeRect(0, 0, size, size))
+    cy   = size / 2
+    sx   = ((t * spd * 1.6) % 1.0) * (size + 10) - 5
+    pts  = []
+    for x in range(size + 1):
+        dx = x - sx
+        if -1 < dx < 8:
+            if   dx < 0:   y = cy
+            elif dx < 1:   y = cy - amp * dx
+            elif dx < 2.2: y = cy - amp + amp * 2 * (dx - 1) / 1.2
+            elif dx < 3.8: y = cy + amp * (dx - 2.2) / 1.6
+            elif dx < 5.5: y = cy + amp * (1 - (dx - 3.8) / 1.7) * 0.30
+            else:          y = cy
+        else:
+            y = cy
+        pts.append((x, y))
+    path = NSBezierPath.bezierPath()
+    path.moveToPoint_(NSMakePoint(pts[0][0], pts[0][1]))
+    for x, y in pts[1:]: path.lineToPoint_(NSMakePoint(x, y))
+    col.colorWithAlphaComponent_(0.22).setStroke()
+    path.setLineWidth_(4.5); path.stroke()
+    col.setStroke(); path.setLineWidth_(1.4); path.stroke()
+    img.unlockFocus(); img.setTemplate_(False)
+    return img
+
+
+def _draw_circuit(t, state, blink, size=24):
+    """Chip CPU avec pins et LED pulsante."""
+    rc, gc, bc = _STATE_COL[state]
+    col   = _c(rc, gc, bc, 1.0)
+    pulse = 0.65 + math.sin(t * 2 * math.pi) * 0.35
+    img   = NSImage.alloc().initWithSize_(NSMakeSize(size, size))
+    img.lockFocus()
+    NSColor.clearColor().setFill(); NSRectFill(NSMakeRect(0, 0, size, size))
+    cw = size * 0.48; cx = (size - cw) / 2; cy = (size - cw) / 2
+    _c(0.08, 0.08, 0.12, 1.0).setFill()
+    NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+        NSMakeRect(cx, cy, cw, cw), 2.5, 2.5).fill()
+    col.colorWithAlphaComponent_(0.38).setStroke()
+    brd = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+        NSMakeRect(cx, cy, cw, cw), 2.5, 2.5)
+    brd.setLineWidth_(0.7); brd.stroke()
+    plen = 2.8; pw = 1.1; step = cw / 4
+    col.colorWithAlphaComponent_(0.6).setFill()
+    for i in range(3):
+        off = cy + step * (i + 1) - pw / 2
+        NSBezierPath.fillRect_(NSMakeRect(cx - plen, off, plen, pw))
+        NSBezierPath.fillRect_(NSMakeRect(cx + cw,   off, plen, pw))
+        NSBezierPath.fillRect_(NSMakeRect(off, cy - plen, pw, plen))
+        NSBezierPath.fillRect_(NSMakeRect(off, cy + cw,   pw, plen))
+    lr = size * 0.09 * pulse
+    col.colorWithAlphaComponent_(0.25 * pulse).setFill()
+    NSBezierPath.bezierPathWithOvalInRect_(
+        NSMakeRect(size/2 - lr*2.2, size/2 - lr*2.2, lr*4.4, lr*4.4)).fill()
+    col.setFill()
+    NSBezierPath.bezierPathWithOvalInRect_(
+        NSMakeRect(size/2 - lr, size/2 - lr, lr*2, lr*2)).fill()
+    img.unlockFocus(); img.setTemplate_(False)
+    return img
+
+
+def _draw_terminal(t, state, blink, size=24):
+    """>_ curseur clignotant."""
+    rc, gc, bc = _STATE_COL[state]
+    col = _c(rc, gc, bc, 1.0)
+    img = NSImage.alloc().initWithSize_(NSMakeSize(size, size))
+    img.lockFocus()
+    NSColor.clearColor().setFill(); NSRectFill(NSMakeRect(0, 0, size, size))
+    _c(0.04, 0.04, 0.09, 0.95).setFill()
+    NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+        NSMakeRect(1, 1, size - 2, size - 2), 4, 4).fill()
+    col.colorWithAlphaComponent_(0.45).setStroke()
+    brd = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+        NSMakeRect(1, 1, size - 2, size - 2), 4, 4)
+    brd.setLineWidth_(0.6); brd.stroke()
+    arr = NSBezierPath.bezierPath(); arr.setLineWidth_(1.5)
+    arr.moveToPoint_(NSMakePoint(4.5, size * 0.34))
+    arr.lineToPoint_(NSMakePoint(8.5, size * 0.50))
+    arr.lineToPoint_(NSMakePoint(4.5, size * 0.66))
+    col.setStroke(); arr.stroke()
+    if not blink:
+        col.setFill()
+        NSBezierPath.fillRect_(NSMakeRect(10.5, size * 0.36, 5.5, 1.4))
+    img.unlockFocus(); img.setTemplate_(False)
+    return img
+
+
+def _draw_alien(t, state, blink, size=24):
+    """Tête alien avec grands yeux et antennes."""
+    rc, gc, bc = _STATE_COL[state]
+    col  = _c(rc, gc, bc, 0.85)
+    dark = _c(rc * 0.15, gc * 0.15, bc * 0.15, 1.0)
+    bob  = math.sin(t * 2 * math.pi) * 1.0
+    sway = math.sin(t * 2.5 * math.pi + 0.4) * 1.3
+    img  = NSImage.alloc().initWithSize_(NSMakeSize(size, size))
+    img.lockFocus()
+    NSColor.clearColor().setFill(); NSRectFill(NSMakeRect(0, 0, size, size))
+    cx = size / 2; cy = size * 0.46 + bob
+    hw = size * 0.42; hh = size * 0.52
+    col.setFill()
+    NSBezierPath.bezierPathWithOvalInRect_(
+        NSMakeRect(cx - hw/2, cy - hh/2, hw, hh)).fill()
+    ew = hw * 0.38; eh = hh * 0.30; ey = cy + hh * 0.08
+    for ex in (cx - hw*0.23 - ew/2, cx + hw*0.23 - ew/2):
+        dark.setFill()
+        NSBezierPath.bezierPathWithOvalInRect_(NSMakeRect(ex, ey, ew, eh)).fill()
+        _c(1, 1, 1, 0.50).setFill()
+        NSBezierPath.bezierPathWithOvalInRect_(
+            NSMakeRect(ex + ew*0.55, ey + eh*0.52, ew*0.22, ew*0.22)).fill()
+    if state == "panic":
+        _oval(cx - hw*0.14, cy - hh*0.28, hw*0.28, hh*0.18, dark)
+    else:
+        m = NSBezierPath.bezierPath(); m.setLineWidth_(0.9)
+        m.moveToPoint_(NSMakePoint(cx - hw*0.18, cy - hh*0.22))
+        m.lineToPoint_(NSMakePoint(cx + hw*0.18, cy - hh*0.22))
+        dark.colorWithAlphaComponent_(0.8).setStroke(); m.stroke()
+    for side in (-1, 1):
+        ax = cx + side * hw * 0.22; ay_b = cy + hh/2 - 1
+        tip_x = ax + side * sway * 0.6; tip_y = ay_b + 5.5
+        al = NSBezierPath.bezierPath()
+        al.moveToPoint_(NSMakePoint(ax, ay_b))
+        al.lineToPoint_(NSMakePoint(tip_x, tip_y))
+        col.colorWithAlphaComponent_(0.75).setStroke(); al.setLineWidth_(0.9); al.stroke()
+        col.setFill()
+        NSBezierPath.bezierPathWithOvalInRect_(
+            NSMakeRect(tip_x - 1.4, tip_y - 1.4, 2.8, 2.8)).fill()
+    img.unlockFocus(); img.setTemplate_(False)
+    return img
+
+
+def _draw_astronaut(t, state, blink, size=24):
+    """Casque d'astronaute avec visière."""
+    rc, gc, bc = _STATE_COL[state]
+    col  = _c(rc, gc, bc, 1.0)
+    bob  = math.sin(t * 2 * math.pi) * 1.2
+    img  = NSImage.alloc().initWithSize_(NSMakeSize(size, size))
+    img.lockFocus()
+    NSColor.clearColor().setFill(); NSRectFill(NSMakeRect(0, 0, size, size))
+    cx = size / 2; cy = size / 2 + bob; r = size * 0.43
+    _c(0.82, 0.84, 0.90, 1.0).setFill()
+    NSBezierPath.bezierPathWithOvalInRect_(
+        NSMakeRect(cx - r, cy - r, r*2, r*2)).fill()
+    vr = r * 0.66
+    _c(0.04, 0.04, 0.14, 0.96).setFill()
+    NSBezierPath.bezierPathWithOvalInRect_(
+        NSMakeRect(cx - vr, cy - vr*0.82, vr*2, vr*1.64)).fill()
+    hor_y = cy - vr * 0.15
+    col.colorWithAlphaComponent_(0.38).setFill()
+    NSBezierPath.bezierPathWithOvalInRect_(
+        NSMakeRect(cx - vr, hor_y - vr*1.64, vr*2, vr*1.64)).fill()
+    star_phase = (t * 0.7) % 1.0
+    n_stars = {"chill": 3, "busy": 2, "hot": 1, "panic": 0}[state]
+    for i in range(n_stars):
+        sa = max(0.0, math.sin((star_phase + i * 0.33) * math.pi * 2) * 0.5 + 0.5)
+        sx = cx + (i - 1) * vr * 0.42; sy = cy + vr * (0.15 + i * 0.1)
+        _c(1, 1, 1, sa * 0.8).setFill()
+        NSBezierPath.bezierPathWithOvalInRect_(
+            NSMakeRect(sx - 0.7, sy - 0.7, 1.4, 1.4)).fill()
+    _c(1, 1, 1, 0.32).setFill()
+    NSBezierPath.bezierPathWithOvalInRect_(
+        NSMakeRect(cx - r*0.38, cy + r*0.16, r*0.5, r*0.28)).fill()
+    img.unlockFocus(); img.setTemplate_(False)
+    return img
+
+
+def _draw_cube(t, state, blink, size=24):
+    """Cube isométrique flottant."""
+    rc, gc, bc = _STATE_COL[state]
+    col  = _c(rc, gc, bc, 1.0)
+    mid  = _c(rc*0.62, gc*0.62, bc*0.62, 1.0)
+    dark = _c(rc*0.38, gc*0.38, bc*0.38, 1.0)
+    bob  = math.sin(t * 2 * math.pi) * 0.9
+    sc   = size / 24.0
+    img  = NSImage.alloc().initWithSize_(NSMakeSize(size, size))
+    img.lockFocus()
+    NSColor.clearColor().setFill(); NSRectFill(NSMakeRect(0, 0, size, size))
+
+    def _v(x, y): return NSMakePoint(x * sc, y * sc + bob)
+    def _face(*pts):
+        fp = NSBezierPath.bezierPath()
+        fp.moveToPoint_(pts[0])
+        for pt in pts[1:]: fp.lineToPoint_(pt)
+        fp.closePath(); return fp
+
+    apex  = _v(12, 21);  left  = _v(3,  16.2); right = _v(21, 16.2)
+    front = _v(12, 11.4); bl   = _v(3,  6.6);  br    = _v(21, 6.6)
+    btm   = _v(12, 1.8)
+
+    top = _face(apex, right, front, left); col.setFill();  top.fill()
+    rf  = _face(right, front, btm, br);    mid.setFill();  rf.fill()
+    lf  = _face(left,  front, btm, bl);    dark.setFill(); lf.fill()
+    img.unlockFocus(); img.setTemplate_(False)
+    return img
+
+
+def _draw_ninja(t, state, blink, size=24):
+    """Ninja avec bandeau et yeux luisants."""
+    rc, gc, bc = _STATE_COL[state]
+    col  = _c(rc, gc, bc, 1.0)
+    bob  = math.sin(t * 2 * math.pi) * 0.9
+    img  = NSImage.alloc().initWithSize_(NSMakeSize(size, size))
+    img.lockFocus()
+    NSColor.clearColor().setFill(); NSRectFill(NSMakeRect(0, 0, size, size))
+    cx = size / 2; cy = size / 2 + bob; r = size * 0.42
+    _c(0.07, 0.07, 0.11, 1.0).setFill()
+    NSBezierPath.bezierPathWithOvalInRect_(
+        NSMakeRect(cx - r, cy - r, r*2, r*2)).fill()
+    col.colorWithAlphaComponent_(0.75).setFill()
+    NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+        NSMakeRect(cx - r*0.93, cy + r*0.18, r*1.86, r*0.32), 1.2, 1.2).fill()
+    col.colorWithAlphaComponent_(0.13).setFill()
+    NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+        NSMakeRect(cx - r*0.88, cy - r*0.78, r*1.76, r*0.62), 1.5, 1.5).fill()
+    col.colorWithAlphaComponent_(0.6).setFill()
+    NSBezierPath.bezierPathWithOvalInRect_(
+        NSMakeRect(cx + r*0.78, cy + r*0.26, r*0.30, r*0.22)).fill()
+    ew = r * 0.27; eh = r * 0.20; ey = cy + r * 0.01
+    if blink:
+        for ex in (cx - r*0.30, cx + r*0.30):
+            np = NSBezierPath.bezierPath()
+            np.moveToPoint_(NSMakePoint(ex - ew/2, ey))
+            np.lineToPoint_(NSMakePoint(ex + ew/2, ey))
+            col.setStroke(); np.setLineWidth_(1.1); np.stroke()
+    else:
+        for ex in (cx - r*0.30 - ew/2, cx + r*0.30 - ew/2):
+            col.colorWithAlphaComponent_(0.28).setFill()
+            NSBezierPath.bezierPathWithOvalInRect_(
+                NSMakeRect(ex - 1.2, ey - 1.2, ew + 2.4, eh + 2.4)).fill()
+            col.setFill()
+            NSBezierPath.bezierPathWithOvalInRect_(
+                NSMakeRect(ex, ey, ew, eh)).fill()
+    img.unlockFocus(); img.setTemplate_(False)
+    return img
+
+
+def _draw_cat(t, state, blink, size=24):
+    """Tête de chat avec oreilles et moustaches."""
+    rc, gc, bc = _STATE_COL[state]
+    col  = _c(rc, gc, bc, 1.0)
+    dark = _c(rc*0.40, gc*0.40, bc*0.40, 1.0)
+    bob  = math.sin(t * 2 * math.pi) * 0.9
+    img  = NSImage.alloc().initWithSize_(NSMakeSize(size, size))
+    img.lockFocus()
+    NSColor.clearColor().setFill(); NSRectFill(NSMakeRect(0, 0, size, size))
+    cx = size / 2; cy = size * 0.45 + bob; r = size * 0.32
+    for side in (-1.0, 1.0):
+        ear = NSBezierPath.bezierPath()
+        ear.moveToPoint_(NSMakePoint(cx + side*r*0.12, cy + r*0.80))
+        ear.lineToPoint_(NSMakePoint(cx + side*r*0.90, cy + r*0.80))
+        ear.lineToPoint_(NSMakePoint(cx + side*r*0.62, cy + r*1.65))
+        ear.closePath(); col.setFill(); ear.fill()
+        inn = NSBezierPath.bezierPath()
+        inn.moveToPoint_(NSMakePoint(cx + side*r*0.22, cy + r*0.80))
+        inn.lineToPoint_(NSMakePoint(cx + side*r*0.80, cy + r*0.80))
+        inn.lineToPoint_(NSMakePoint(cx + side*r*0.58, cy + r*1.42))
+        inn.closePath()
+        dark.colorWithAlphaComponent_(0.45).setFill(); inn.fill()
+    col.setFill()
+    NSBezierPath.bezierPathWithOvalInRect_(
+        NSMakeRect(cx - r, cy - r, r*2, r*2)).fill()
+    ew = r * 0.34; eh = r * 0.34; ey = cy + r * 0.12
+    if blink:
+        for ex in (cx - r*0.36, cx + r*0.36):
+            cp = NSBezierPath.bezierPath()
+            cp.moveToPoint_(NSMakePoint(ex - ew/2, ey))
+            cp.lineToPoint_(NSMakePoint(ex + ew/2, ey))
+            dark.setStroke(); cp.setLineWidth_(1.1); cp.stroke()
+    else:
+        for ex in (cx - r*0.36 - ew/2, cx + r*0.36 - ew/2):
+            dark.setFill()
+            NSBezierPath.bezierPathWithOvalInRect_(
+                NSMakeRect(ex, ey - eh/2, ew, eh)).fill()
+            _c(1, 1, 1, 0.55).setFill()
+            NSBezierPath.bezierPathWithOvalInRect_(
+                NSMakeRect(ex + ew*0.52, ey + eh*0.08, ew*0.28, ew*0.28)).fill()
+    nose = NSBezierPath.bezierPath()
+    nose.moveToPoint_(NSMakePoint(cx,           cy - r*0.04))
+    nose.lineToPoint_(NSMakePoint(cx - r*0.10,  cy - r*0.20))
+    nose.lineToPoint_(NSMakePoint(cx + r*0.10,  cy - r*0.20))
+    nose.closePath()
+    dark.colorWithAlphaComponent_(0.7).setFill(); nose.fill()
+    for side in (-1.0, 1.0):
+        for dy in (-0.08, 0.05, 0.18):
+            wp = NSBezierPath.bezierPath()
+            wp.moveToPoint_(NSMakePoint(cx + side*r*0.14, cy - r*0.06 + dy*r))
+            wp.lineToPoint_(NSMakePoint(cx + side*r*0.88, cy - r*0.06 + dy*r*0.35))
+            dark.colorWithAlphaComponent_(0.38).setStroke()
+            wp.setLineWidth_(0.6); wp.stroke()
+    img.unlockFocus(); img.setTemplate_(False)
+    return img
+
+
+def _draw_ghost(t, state, blink, size=24):
+    """Fantôme flottant avec bas ondulé."""
+    rc, gc, bc = _STATE_COL[state]
+    col  = _c(rc, gc, bc, 1.0)
+    bob  = math.sin(t * 2 * math.pi) * 1.5
+    swg  = math.sin(t * 3 * math.pi) * 1.0
+    img  = NSImage.alloc().initWithSize_(NSMakeSize(size, size))
+    img.lockFocus()
+    NSColor.clearColor().setFill(); NSRectFill(NSMakeRect(0, 0, size, size))
+    cx = size / 2; r = size * 0.40; cy = size * 0.56 + bob
+    bot = cy - r * 1.05
+    ghost = NSBezierPath.bezierPath()
+    ghost.appendBezierPathWithArcWithCenter_radius_startAngle_endAngle_(
+        NSMakePoint(cx, cy), r, 0, 180)
+    ghost.lineToPoint_(NSMakePoint(cx - r, bot + r*0.12))
+    seg = r * 2 / 4
+    for i in range(4):
+        hump = bot + r*0.22 if i % 2 == 0 else bot
+        ghost.lineToPoint_(NSMakePoint(cx - r + seg*(i+0.5),
+                                       hump + swg*(0.4 if i%2==0 else -0.4)))
+        ghost.lineToPoint_(NSMakePoint(cx - r + seg*(i+1), bot))
+    ghost.lineToPoint_(NSMakePoint(cx + r, cy))
+    ghost.closePath()
+    col.setFill(); ghost.fill()
+    ey  = cy + r * 0.14; ew = r * 0.32
+    eh  = r * (0.38 if state == "panic" else 0.30)
+    if blink:
+        for ex in (cx - r*0.34, cx + r*0.34):
+            gp = NSBezierPath.bezierPath()
+            gp.moveToPoint_(NSMakePoint(ex - ew/2, ey))
+            gp.lineToPoint_(NSMakePoint(ex + ew/2, ey))
+            _c(0, 0, 0, 0.88).setStroke(); gp.setLineWidth_(1.1); gp.stroke()
+    else:
+        for ex in (cx - r*0.34 - ew/2, cx + r*0.34 - ew/2):
+            _c(0.03, 0.03, 0.12, 0.96).setFill()
+            NSBezierPath.bezierPathWithOvalInRect_(
+                NSMakeRect(ex, ey - eh/2, ew, eh)).fill()
+            _c(1, 1, 1, 0.55).setFill()
+            NSBezierPath.bezierPathWithOvalInRect_(
+                NSMakeRect(ex + ew*0.48, ey + eh*0.05, ew*0.30, ew*0.30)).fill()
+    img.unlockFocus(); img.setTemplate_(False)
+    return img
+
+
+def _draw_skull(t, state, blink, size=24):
+    """Crâne avec orbites brillantes."""
+    rc, gc, bc = _STATE_COL[state]
+    col   = _c(rc, gc, bc, 1.0)
+    bone  = _c(0.86, 0.86, 0.88, 1.0)
+    shade = _c(0.32, 0.32, 0.36, 1.0)
+    pulse = 0.55 + math.sin(t * 3 * math.pi) * 0.45
+    bob   = math.sin(t * 2 * math.pi) * 0.8
+    img   = NSImage.alloc().initWithSize_(NSMakeSize(size, size))
+    img.lockFocus()
+    NSColor.clearColor().setFill(); NSRectFill(NSMakeRect(0, 0, size, size))
+    cx = size / 2; cy = size * 0.48 + bob
+    # Crâne (cranium arrondi)
+    bone.setFill()
+    NSBezierPath.bezierPathWithOvalInRect_(
+        NSMakeRect(cx - size*0.34, cy - size*0.08, size*0.68, size*0.56)).fill()
+    # Mâchoire
+    NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+        NSMakeRect(cx - size*0.24, cy - size*0.25, size*0.48, size*0.20), 3, 3).fill()
+    # Dents (4)
+    shade.setFill()
+    tw = size * 0.085; th = size * 0.09
+    for i in range(4):
+        NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+            NSMakeRect(cx - size*0.185 + i*(tw + size*0.018),
+                       cy - size*0.25, tw, th), 1.5, 1.5).fill()
+    # Cavité nasale
+    shade.setFill()
+    ns = NSBezierPath.bezierPath()
+    ns.moveToPoint_(NSMakePoint(cx, cy + size*0.06))
+    ns.lineToPoint_(NSMakePoint(cx - size*0.06, cy - size*0.03))
+    ns.lineToPoint_(NSMakePoint(cx + size*0.06, cy - size*0.03))
+    ns.closePath(); ns.fill()
+    # Orbites avec lueur
+    ey = cy + size * 0.20
+    for ex in (cx - size*0.15, cx + size*0.15):
+        _c(0.12, 0.12, 0.16, 1.0).setFill()
+        NSBezierPath.bezierPathWithOvalInRect_(
+            NSMakeRect(ex - size*0.105, ey - size*0.090, size*0.21, size*0.18)).fill()
+        col.colorWithAlphaComponent_(0.28 * pulse).setFill()
+        NSBezierPath.bezierPathWithOvalInRect_(
+            NSMakeRect(ex - size*0.095, ey - size*0.082, size*0.19, size*0.164)).fill()
+        col.colorWithAlphaComponent_(0.80 * pulse).setFill()
+        NSBezierPath.bezierPathWithOvalInRect_(
+            NSMakeRect(ex - size*0.048, ey - size*0.040, size*0.096, size*0.080)).fill()
+    img.unlockFocus(); img.setTemplate_(False)
+    return img
+
+
+def _draw_eye(t, state, blink, size=24):
+    """Œil omniscient avec iris pulsant."""
+    rc, gc, bc = _STATE_COL[state]
+    col   = _c(rc, gc, bc, 1.0)
+    pulse = 0.70 + math.sin(t * 2 * math.pi) * 0.30
+    bob   = math.sin(t * 1.5 * math.pi) * 0.6
+    img   = NSImage.alloc().initWithSize_(NSMakeSize(size, size))
+    img.lockFocus()
+    NSColor.clearColor().setFill(); NSRectFill(NSMakeRect(0, 0, size, size))
+    cx = size / 2; cy = size / 2 + bob
+    ew = size * 0.44; eh = size * 0.24
+    # Forme œil (vesica piscis)
+    eye_p = NSBezierPath.bezierPath()
+    eye_p.moveToPoint_(NSMakePoint(cx - ew, cy))
+    eye_p.curveToPoint_controlPoint1_controlPoint2_(
+        NSMakePoint(cx + ew, cy),
+        NSMakePoint(cx - ew*0.5, cy + eh),
+        NSMakePoint(cx + ew*0.5, cy + eh))
+    eye_p.curveToPoint_controlPoint1_controlPoint2_(
+        NSMakePoint(cx - ew, cy),
+        NSMakePoint(cx + ew*0.5, cy - eh),
+        NSMakePoint(cx - ew*0.5, cy - eh))
+    eye_p.closePath()
+    _c(0.90, 0.90, 0.95, 1.0).setFill(); eye_p.fill()
+    # Iris coloré
+    ir = eh * 0.90
+    col.colorWithAlphaComponent_(0.92 * pulse).setFill()
+    NSBezierPath.bezierPathWithOvalInRect_(
+        NSMakeRect(cx - ir, cy - ir, ir*2, ir*2)).fill()
+    # Pupille
+    pr = ir * 0.48
+    if blink:
+        _c(0.02, 0.02, 0.06, 1.0).setFill()
+        NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+            NSMakeRect(cx - pr*1.5, cy - pr*0.18, pr*3, pr*0.36), 2, 2).fill()
+    else:
+        _c(0.02, 0.02, 0.06, 1.0).setFill()
+        NSBezierPath.bezierPathWithOvalInRect_(
+            NSMakeRect(cx - pr, cy - pr, pr*2, pr*2)).fill()
+        _c(1, 1, 1, 0.68).setFill()
+        NSBezierPath.bezierPathWithOvalInRect_(
+            NSMakeRect(cx + pr*0.22, cy + pr*0.18, pr*0.40, pr*0.40)).fill()
+    _c(0.07, 0.05, 0.12, 0.75).setStroke()
+    eye_p.setLineWidth_(0.8); eye_p.stroke()
+    img.unlockFocus(); img.setTemplate_(False)
+    return img
+
+
+def _draw_planet(t, state, blink, size=24):
+    """Planète avec anneau (style Saturne)."""
+    rc, gc, bc = _STATE_COL[state]
+    col  = _c(rc, gc, bc, 1.0)
+    dark = _c(rc*0.48, gc*0.48, bc*0.48, 1.0)
+    spin = t * 2 * math.pi
+    img  = NSImage.alloc().initWithSize_(NSMakeSize(size, size))
+    img.lockFocus()
+    NSColor.clearColor().setFill(); NSRectFill(NSMakeRect(0, 0, size, size))
+    cx = size / 2; cy = size / 2
+    pr = size * 0.27; rxa = size * 0.44; rya = size * 0.13
+    # Anneau arrière (sombre)
+    dark.colorWithAlphaComponent_(0.50).setStroke()
+    rb = NSBezierPath.bezierPath()
+    rb.appendBezierPathWithArcWithCenter_radius_startAngle_endAngle_(
+        NSMakePoint(cx, cy + rya * 0.3), rxa, 0, 180)
+    rb.setLineWidth_(2.2); rb.stroke()
+    # Planète
+    col.setFill()
+    NSBezierPath.bezierPathWithOvalInRect_(
+        NSMakeRect(cx - pr, cy - pr, pr*2, pr*2)).fill()
+    # Bande atmosphérique
+    dark.colorWithAlphaComponent_(0.20).setFill()
+    NSBezierPath.bezierPathWithOvalInRect_(
+        NSMakeRect(cx - pr, cy - pr*0.18, pr*2, pr*0.36)).fill()
+    # Reflet
+    _c(1, 1, 1, 0.28).setFill()
+    NSBezierPath.bezierPathWithOvalInRect_(
+        NSMakeRect(cx - pr*0.48, cy + pr*0.22, pr*0.52, pr*0.28)).fill()
+    # Anneau avant (brillant)
+    col.colorWithAlphaComponent_(0.78).setStroke()
+    rf = NSBezierPath.bezierPath()
+    rf.appendBezierPathWithArcWithCenter_radius_startAngle_endAngle_(
+        NSMakePoint(cx, cy + rya * 0.3), rxa, 180, 360)
+    rf.setLineWidth_(2.2); rf.stroke()
+    # Étoiles orbitales
+    for i in range(3):
+        sa = math.sin(spin * 0.4 + i * 2.1) * 0.5 + 0.5
+        sx = cx + math.cos(spin * 0.25 + i * 2.1) * size * 0.44
+        sy = cy + math.sin(spin * 0.25 + i * 2.1) * size * 0.14 + rya * 0.3
+        _c(1, 1, 1, sa * 0.65).setFill()
+        NSBezierPath.bezierPathWithOvalInRect_(
+            NSMakeRect(sx - 0.9, sy - 0.9, 1.8, 1.8)).fill()
+    img.unlockFocus(); img.setTemplate_(False)
+    return img
+
+
+def _draw_flame(t, state, blink, size=24):
+    """Flamme vive animée."""
+    rc, gc, bc = _STATE_COL[state]
+    col  = _c(rc, gc, bc, 1.0)
+    flk1 = math.sin(t * 7 * math.pi) * 1.3
+    flk2 = math.sin(t * 5 * math.pi + 1.0) * 0.9
+    bob  = math.sin(t * 3 * math.pi) * 0.6
+    img  = NSImage.alloc().initWithSize_(NSMakeSize(size, size))
+    img.lockFocus()
+    NSColor.clearColor().setFill(); NSRectFill(NSMakeRect(0, 0, size, size))
+    cx = size / 2; base = size * 0.09
+    # Flamme extérieure
+    fl = NSBezierPath.bezierPath()
+    fl.moveToPoint_(NSMakePoint(cx - size*0.18, base))
+    fl.curveToPoint_controlPoint1_controlPoint2_(
+        NSMakePoint(cx - size*0.28 + flk1, size*0.54 + bob),
+        NSMakePoint(cx - size*0.34, size*0.20),
+        NSMakePoint(cx - size*0.30, size*0.40))
+    fl.curveToPoint_controlPoint1_controlPoint2_(
+        NSMakePoint(cx, size*0.93 + bob),
+        NSMakePoint(cx - size*0.20 + flk2, size*0.72),
+        NSMakePoint(cx - size*0.10, size*0.86))
+    fl.curveToPoint_controlPoint1_controlPoint2_(
+        NSMakePoint(cx + size*0.28 - flk1, size*0.54 + bob),
+        NSMakePoint(cx + size*0.10, size*0.86),
+        NSMakePoint(cx + size*0.20 - flk2, size*0.72))
+    fl.curveToPoint_controlPoint1_controlPoint2_(
+        NSMakePoint(cx + size*0.18, base),
+        NSMakePoint(cx + size*0.30, size*0.40),
+        NSMakePoint(cx + size*0.34, size*0.20))
+    fl.closePath(); col.setFill(); fl.fill()
+    # Flamme intérieure (claire)
+    fi = NSBezierPath.bezierPath()
+    fi.moveToPoint_(NSMakePoint(cx - size*0.10, base + size*0.07))
+    fi.curveToPoint_controlPoint1_controlPoint2_(
+        NSMakePoint(cx, size*0.76 + bob*0.5),
+        NSMakePoint(cx - size*0.20, size*0.34),
+        NSMakePoint(cx - size*0.08, size*0.60))
+    fi.curveToPoint_controlPoint1_controlPoint2_(
+        NSMakePoint(cx + size*0.10, base + size*0.07),
+        NSMakePoint(cx + size*0.08, size*0.60),
+        NSMakePoint(cx + size*0.20, size*0.34))
+    fi.closePath()
+    col.colorWithAlphaComponent_(0.50).setFill(); fi.fill()
+    _c(1, 1, 1, 0.28).setFill()
+    NSBezierPath.bezierPathWithOvalInRect_(
+        NSMakeRect(cx - size*0.06, base + size*0.08, size*0.12, size*0.16)).fill()
+    img.unlockFocus(); img.setTemplate_(False)
+    return img
+
+
+def _draw_panda(t, state, blink, size=24):
+    """Tête de panda avec taches d'yeux."""
+    rc, gc, bc = _STATE_COL[state]
+    col  = _c(rc, gc, bc, 1.0)
+    bob  = math.sin(t * 2 * math.pi) * 0.8
+    img  = NSImage.alloc().initWithSize_(NSMakeSize(size, size))
+    img.lockFocus()
+    NSColor.clearColor().setFill(); NSRectFill(NSMakeRect(0, 0, size, size))
+    cx = size / 2; cy = size * 0.46 + bob; r = size * 0.36
+    # Oreilles rondes (derrière la tête)
+    for side in (-1.0, 1.0):
+        col.colorWithAlphaComponent_(0.80).setFill()
+        NSBezierPath.bezierPathWithOvalInRect_(
+            NSMakeRect(cx + side*r*0.72 - r*0.30, cy + r*0.56 - r*0.30,
+                       r*0.60, r*0.60)).fill()
+    # Tête blanche
+    _c(0.92, 0.92, 0.95, 1.0).setFill()
+    NSBezierPath.bezierPathWithOvalInRect_(
+        NSMakeRect(cx - r, cy - r, r*2, r*2)).fill()
+    # Taches œils (state color = la couleur change avec CPU)
+    ey = cy + r * 0.14
+    for side in (-1.0, 1.0):
+        ex = cx + side * r * 0.34
+        col.colorWithAlphaComponent_(0.88).setFill()
+        NSBezierPath.bezierPathWithOvalInRect_(
+            NSMakeRect(ex - r*0.26, ey - r*0.22, r*0.52, r*0.42)).fill()
+        if blink:
+            lp = NSBezierPath.bezierPath()
+            lp.moveToPoint_(NSMakePoint(ex - r*0.14, ey))
+            lp.lineToPoint_(NSMakePoint(ex + r*0.14, ey))
+            _c(1, 1, 1, 0.9).setStroke(); lp.setLineWidth_(1.0); lp.stroke()
+        else:
+            _c(1, 1, 1, 0.95).setFill()
+            NSBezierPath.bezierPathWithOvalInRect_(
+                NSMakeRect(ex - r*0.12, ey - r*0.11, r*0.24, r*0.22)).fill()
+            _c(0.06, 0.05, 0.10, 1.0).setFill()
+            NSBezierPath.bezierPathWithOvalInRect_(
+                NSMakeRect(ex - r*0.07, ey - r*0.07, r*0.14, r*0.14)).fill()
+    # Nez (ovale sombre)
+    _c(0.18, 0.18, 0.22, 1.0).setFill()
+    NSBezierPath.bezierPathWithOvalInRect_(
+        NSMakeRect(cx - r*0.12, cy - r*0.14, r*0.24, r*0.14)).fill()
+    # Sourire
+    sm = NSBezierPath.bezierPath(); sm.setLineWidth_(1.0)
+    sm.moveToPoint_(NSMakePoint(cx - r*0.14, cy - r*0.18))
+    sm.curveToPoint_controlPoint1_controlPoint2_(
+        NSMakePoint(cx + r*0.14, cy - r*0.18),
+        NSMakePoint(cx - r*0.08, cy - r*0.28),
+        NSMakePoint(cx + r*0.08, cy - r*0.28))
+    _c(0.18, 0.18, 0.22, 0.7).setStroke(); sm.stroke()
+    img.unlockFocus(); img.setTemplate_(False)
+    return img
+
+
+_ICON_DRAW = {
+    "robot":     _draw_robot,
+    "pulse":     _draw_pulse,
+    "circuit":   _draw_circuit,
+    "terminal":  _draw_terminal,
+    "alien":     _draw_alien,
+    "astronaut": _draw_astronaut,
+    "cube":      _draw_cube,
+    "ninja":     _draw_ninja,
+    "cat":       _draw_cat,
+    "ghost":     _draw_ghost,
+    "skull":     _draw_skull,
+    "eye":       _draw_eye,
+    "planet":    _draw_planet,
+    "flame":     _draw_flame,
+    "panda":     _draw_panda,
+}
+
+def draw_character(t, state, blink, size=24):
+    """Dispatche vers la fonction de dessin selon _ICON_STYLE."""
+    return _ICON_DRAW.get(_ICON_STYLE, _draw_robot)(t, state, blink, size)
 
 
 # ─── Helpers système ──────────────────────────────────────────────────────────
@@ -1150,7 +1993,8 @@ def _top_procs(n=6):
             i = p.info
             procs.append({"name": i["name"] or "?",
                           "cpu":  i["cpu_percent"] or 0.0,
-                          "mem":  i["memory_percent"] or 0.0})
+                          "mem":  i["memory_percent"] or 0.0,
+                          "pid":  i["pid"] or 0})
         except (psutil.NoSuchProcess, psutil.AccessDenied): continue
     procs.sort(key=lambda x: x["cpu"], reverse=True)
     return procs[:n]
@@ -1176,6 +2020,29 @@ def _lock_screen():
             "/System/Library/PrivateFrameworks/login.framework"
             "/Versions/Current/login")
         lib.SACLockScreenImmediate()
+    except Exception:
+        pass
+
+def _get_volume():
+    try:
+        out = subprocess.run(["osascript", "-e",
+            "output volume of (get volume settings)"],
+            capture_output=True, text=True, timeout=2).stdout.strip()
+        return int(out)
+    except Exception:
+        return -1
+
+def _set_volume(v):
+    try:
+        v = max(0, min(100, v))
+        subprocess.Popen(["osascript", "-e", f"set volume output volume {v}"])
+    except Exception:
+        pass
+
+def _toggle_mute():
+    try:
+        subprocess.Popen(["osascript", "-e",
+            "set volume output muted not (output muted of (get volume settings))"])
     except Exception:
         pass
 
@@ -1303,6 +2170,9 @@ class MacMonitorPro(rumps.App):
         self._ram_hist = deque([0.0]*HIST, maxlen=HIST)
         self._dl_hist  = deque([0.0]*HIST, maxlen=HIST)
         self._ul_hist  = deque([0.0]*HIST, maxlen=HIST)
+        self._cpu_hist_long = deque([0.0] * 180, maxlen=180)  # 180 × 2s = 6 minutes
+        self._ram_hist_long = deque([0.0] * 180, maxlen=180)
+        self._hist_long_t   = 0.0
 
         self._prev_disk = psutil.disk_io_counters()
         psutil.cpu_percent()
@@ -1331,6 +2201,7 @@ class MacMonitorPro(rumps.App):
         # Caches
         self._temp  = "—"; self._temp_t  = 0.0
         self._music = "";   self._music_t = 0.0
+        self._volume = -1;  self._volume_t = 0.0
         self._ping  = "—"; self._ping_t  = 0.0
         self._mpres = "—"; self._mpres_t = 0.0
         self._wifi  = ("",0); self._wifi_t = 0.0
@@ -1342,7 +2213,12 @@ class MacMonitorPro(rumps.App):
         self._focus   = None; self._focus_t   = 0.0
         self._wtimes  = [];   self._wtimes_t  = 0.0
 
+        self._last_icon_key = None
+        self._last_icon_img = None
         self._setup_done = False
+        _load_icon_style()
+        _load_theme()
+        _save_theme(_THEME)
         _ensure_launchagent()
 
     @rumps.timer(0.05)
@@ -1353,7 +2229,7 @@ class MacMonitorPro(rumps.App):
         self._setup_done = True; timer.stop()
 
         global _panel_view, _menu
-        view        = PanelView.alloc().initWithFrame_(NSMakeRect(0, 0, PW, PH))
+        view        = PanelView.alloc().initWithFrame_(NSMakeRect(0, 0, PW, PH_BY_TAB["sys"]))
         _panel_view = view
 
         item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("",None,"")
@@ -1384,7 +2260,13 @@ class MacMonitorPro(rumps.App):
         self._blink = ((self._t % 0.35) < 0.06)
         if not self._setup_done: return
         now   = time.time()
-        img   = draw_character(self._t, self._state, self._blink)
+        icon_key = (round(self._t * 20) / 20, self._state, self._blink, _ICON_STYLE)
+        if icon_key != self._last_icon_key:
+            img = draw_character(self._t, self._state, self._blink)
+            self._last_icon_key = icon_key
+            self._last_icon_img = img
+        else:
+            img = self._last_icon_img
         btn   = self._nsapp.nsstatusitem.button()
         btn.setImage_(img)
         if self._pomo_end > 0:
@@ -1394,8 +2276,17 @@ class MacMonitorPro(rumps.App):
                 self._pomo_end = 0.0
                 self._notify("pomo", "Pomodoro terminé! 🍅",
                              "25 minutes — prenez une pause ☕")
-        else:
+        elif _TITLE_MODE == "cpu":
             title = f" {self._cpu:.0f}%"
+        elif _TITLE_MODE == "ram":
+            vm_pct = _S.get('ram', 0)
+            title = f" {vm_pct:.0f}%"
+        elif _TITLE_MODE == "net":
+            title = f" ↓{_b(self._dl)}/s" if self._dl > 1024 else " ↓—"
+        elif _TITLE_MODE == "clock":
+            title = f" {time.strftime('%H:%M')}"
+        else:
+            title = ""
         btn.setTitle_(title)
 
     @rumps.timer(1.0)
@@ -1427,6 +2318,8 @@ class MacMonitorPro(rumps.App):
         self._cpu = cpu; self._cpu_hist.append(cpu)
 
         vm = psutil.virtual_memory(); self._ram_hist.append(vm.percent)
+        self._cpu_hist_long.append(cpu)
+        self._ram_hist_long.append(vm.percent)
 
         if now - self._disk_last > 30:
             try:
@@ -1462,7 +2355,9 @@ class MacMonitorPro(rumps.App):
             self._dl_hi_since = 0
 
         batt = psutil.sensors_battery()
-        up   = str(timedelta(seconds=int(now - self._boot)))
+        _secs = int(now - self._boot)
+        _d, _h, _m = _secs // 86400, (_secs % 86400) // 3600, (_secs % 3600) // 60
+        up = (f"{_d}j {_h}h" if _d else f"{_h}h {_m}m" if _h else f"{_m}m")
 
         self._state = ("panic" if cpu >= 80 else "hot" if cpu >= 60
                        else "busy" if cpu >= 35 else "chill")
@@ -1485,6 +2380,7 @@ class MacMonitorPro(rumps.App):
             threading.Thread(target=self._fetch_vpn, daemon=True).start()
         if now - self._focus_t  > 10:  self._focus  = _get_focus_mode();  self._focus_t = now
         if now - self._wtimes_t > 60:  self._wtimes = _get_world_times(); self._wtimes_t = now
+        if now - self._volume_t > 3:   self._volume = _get_volume();      self._volume_t = now
 
         freq_s = f"{freq.current:.0f} MHz" if freq else "—"
 
@@ -1493,6 +2389,8 @@ class MacMonitorPro(rumps.App):
             "cpu_info":     f"{self._nc}C · {self._nt}T · {freq_s}",
             "cpu_temp":     self._temp,
             "cpu_hist":     list(self._cpu_hist),
+            "cpu_hist_long": list(self._cpu_hist_long),
+            "ram_hist_long": list(self._ram_hist_long),
             "gpu":          self._gpu,
             "ram":          vm.percent,
             "ram_info":     f"{_b(vm.total - vm.available)} / {_b(vm.total)}",
@@ -1518,6 +2416,7 @@ class MacMonitorPro(rumps.App):
             "vpn":          self._vpn,
             "focus":        self._focus,
             "world_times":  self._wtimes,
+            "volume":       self._volume,
         })
         if batt:
             ts = ("∞" if batt.secsleft == psutil.POWER_TIME_UNLIMITED
