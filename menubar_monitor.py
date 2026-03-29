@@ -30,8 +30,8 @@ Y_FLOOR     = 14
 PH_BY_TAB = {
     "sys":  520,   # cpu(136) + gap + ram(116) + gap + batt+tz(106) + marges
     "net":  540,   # réseau(188) + disque(130) + speedtest(88) + marges
-    "cal":  490,   # calendrier(190) + musique(102) + météo(58) + marges
-    "proc": 760,   # 10 procs(284) + volume(36) + actions(48) + icônes(160) + thèmes(54) + quitter(34)
+    "cal":  560,   # calendrier(190) + musique(102) + météo(58) + volume(36) + marges
+    "proc": 720,   # 10 procs(284) + actions(48) + icônes(160) + thèmes(54) + quitter(34)
 }
 PH          = PH_BY_TAB["sys"]   # hauteur initiale (onglet sys par défaut)
 
@@ -649,6 +649,35 @@ class PanelView(NSView):
         else:
             _draw("Chargement…", PAD + 10, y - 36, _c(1, 1, 1, 0.20), F_INFO)
 
+        y -= 58 + 18
+
+        # ── Volume ────────────────────────────────────
+        vol = s.get('volume', -1)
+        if vol >= 0:
+            vh = 36
+            _card(PAD, y, bw, vh, C_MUS, alpha=0.05)
+            _draw(f"{'🔇' if vol == 0 else '🔊'}", PAD + 10, y - 24, C_WHITE, SF(11, 0.0))
+            _draw("Volume", PAD + 28, y - 24, C_GRAY, F_SM)
+            bar_x = PAD + 75; bar_w = bw - 75 - 90; bar_h = 5
+            bar_y = y - 23
+            _c(1,1,1,0.08).setFill()
+            NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+                NSMakeRect(bar_x, bar_y, bar_w, bar_h), 2.5, 2.5).fill()
+            if vol > 0:
+                fw = bar_w * vol / 100
+                vc = C_RED if vol > 80 else C_ORA if vol > 60 else C_MUS
+                vc.setFill()
+                NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+                    NSMakeRect(bar_x, bar_y, fw, bar_h), 2.5, 2.5).fill()
+            _draw_r(f"{vol}%", bar_x + bar_w + 38, y - 24, C_GRAY, F_SM)
+            bsz = 22
+            for btn_name, lbl, bx in (
+                ("vol_dn", "−", bar_x + bar_w + 40),
+                ("vol_up", "+", bar_x + bar_w + 64),
+            ):
+                hbg = _c(1,1,1,0.14) if self._hover == btn_name else _c(1,1,1,0.07)
+                rects[btn_name] = _btn(bx, y - vh + 7, bsz, bsz, lbl, hbg, C_WHITE, r=5)
+
     # ── Page 4 : Process ─────────────────────────────────────
     def _draw_proc(self, y, bw, s, w, rects):
         procs = s.get('top_procs', [])
@@ -701,36 +730,6 @@ class PanelView(NSView):
                 _sep(py - 5, PAD + 10, PAD + bw - 10)
 
         y -= proc_h + 24
-
-        # ── Volume ────────────────────────────────────
-        vol = s.get('volume', -1)
-        if vol >= 0:
-            vh = 28
-            _card(PAD, y, bw, vh, C_SYS, alpha=0.05)
-            _draw(f"{'🔇' if vol == 0 else '🔊'}", PAD + 10, y - 20, C_WHITE, SF(11, 0.0))
-            _draw("Volume", PAD + 28, y - 20, C_GRAY, F_SM)
-            # Barre volume
-            bar_x = PAD + 75; bar_w = bw - 75 - 90; bar_h = 5
-            bar_y = y - 19
-            _c(1,1,1,0.08).setFill()
-            NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
-                NSMakeRect(bar_x, bar_y, bar_w, bar_h), 2.5, 2.5).fill()
-            if vol > 0:
-                fw = bar_w * vol / 100
-                vc = C_RED if vol > 80 else C_ORA if vol > 60 else C_SYS
-                vc.setFill()
-                NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
-                    NSMakeRect(bar_x, bar_y, fw, bar_h), 2.5, 2.5).fill()
-            _draw_r(f"{vol}%", bar_x + bar_w + 38, y - 20, C_GRAY, F_SM)
-            # Boutons − +
-            bsz = 22
-            for btn_name, lbl, bx in (
-                ("vol_dn", "−", bar_x + bar_w + 40),
-                ("vol_up", "+", bar_x + bar_w + 64),
-            ):
-                hbg = _c(1,1,1,0.14) if self._hover == btn_name else _c(1,1,1,0.07)
-                rects[btn_name] = _btn(bx, y - vh + 3, bsz, bsz, lbl, hbg, C_WHITE, r=5)
-            y -= vh + 8
 
         # ── Boutons d'action ──────────────────────────
         abh = 34
