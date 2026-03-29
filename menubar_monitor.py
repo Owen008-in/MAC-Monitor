@@ -31,7 +31,7 @@ PH_BY_TAB = {
     "sys":  520,   # cpu(136) + gap + ram(116) + gap + batt+tz(106) + marges
     "net":  540,   # réseau(188) + disque(130) + speedtest(88) + marges
     "cal":  490,   # cal(62+) + volume(36) + musique(84) + météo(58) + marges
-    "proc": 720,   # 10 procs(284) + actions(48) + icônes(160) + thèmes(54) + quitter(34)
+    "proc": 750,   # 10 procs(284) + actions(48) + icônes(191) + thèmes(54) + quitter(34) + marges
 }
 PH          = PH_BY_TAB["sys"]   # hauteur initiale (onglet sys par défaut)
 
@@ -448,7 +448,8 @@ class PanelView(NSView):
         if wtimes:
             base_y = y - bc_h + 10   # 10px depuis le bas de la card
             _sep(base_y + 11, PAD + 10, PAD + bw - 10)
-            tz_txt = "   ·   ".join(f"{lbl} {t}" for lbl, t in wtimes[:3])
+            icons = {"Paris": "🇫🇷", "NY": "🗽", "Tokyo": "🗼", "UTC": "🌐"}
+            tz_txt = "   ·   ".join(f"{icons.get(lbl,'🕐')} {lbl} {t}" for lbl, t in wtimes[:3])
             _draw_c(tz_txt, w / 2, base_y, _c(1, 1, 1, 0.30), SF(9, 0.0))
 
     # ── Page 2 : Réseau ──────────────────────────────────────
@@ -779,8 +780,8 @@ class PanelView(NSView):
         icon_bh  = 34
         icon_gap = 3
         n_rows   = (len(ICON_STYLES) + n_cols - 1) // n_cols
-        # sel_h: couvre label(14) + gap(6) + lignes + padding(6)
-        sel_h    = 44 + n_rows * (icon_bh + icon_gap) - icon_gap
+        # sel_h: top(38 = label+gap) + lignes restantes + padding bas(8)
+        sel_h    = 38 + (n_rows - 1) * (icon_bh + icon_gap) + icon_bh + 8
         _card(PAD, y, bw, sel_h, C_PROC, alpha=0.04)
         _section_label(PAD + 10, y - 14, "ICÔNE MENUBAR", C_PROC)
         # row 0 top = y-18 (6px sous le bas du label à y-4), pas d'overlap
@@ -1014,10 +1015,12 @@ _STATE_COL = {
 
 ICON_STYLES = ["robot", "pulse", "circuit", "terminal", "alien",
                "astronaut", "cube", "ninja", "cat", "ghost",
-               "skull", "eye", "planet", "flame", "panda"]
+               "skull", "eye", "planet", "flame", "panda",
+               "dragon", "bear", "wizard", "fox", "penguin"]
 ICON_LABELS = ["Robot", "Pulse", "Circuit", ">_", "Alien",
                "Astro", "Cube", "Ninja", "Cat", "Ghost",
-               "Skull", "Eye", "Planet", "Flame", "Panda"]
+               "Skull", "Eye", "Planet", "Flame", "Panda",
+               "Dragon", "Bear", "Wizard", "Fox", "Penguin"]
 
 _ICON_STYLE = "robot"
 _STYLE_FILE  = os.path.expanduser("~/.config/macmonitor/style.txt")
@@ -1829,6 +1832,277 @@ def _draw_panda(t, state, blink, size=24):
     return img
 
 
+def _draw_dragon(t, state, blink, size=24):
+    rc, gc, bc = _STATE_COL[state]
+    col = _c(rc, gc, bc, 1.0)
+    img = NSImage.alloc().initWithSize_(NSMakeSize(size, size))
+    img.lockFocus()
+    NSColor.clearColor().setFill(); NSRectFill(NSMakeRect(0, 0, size, size))
+    cx, cy, r = size*0.5, size*0.48, size*0.38
+    # Corps
+    col.colorWithAlphaComponent_(0.85).setFill()
+    NSBezierPath.bezierPathWithOvalInRect_(NSMakeRect(cx-r*0.7,cy-r*0.7,r*1.4,r*1.4)).fill()
+    # Ailes
+    wing = NSBezierPath.bezierPath()
+    for side in (-1,1):
+        wing.moveToPoint_(NSMakePoint(cx+side*r*0.6, cy+r*0.1))
+        wing.lineToPoint_(NSMakePoint(cx+side*r*(1.2+0.15*math.sin(t*math.pi*2)), cy+r*(0.6+0.1*math.sin(t*math.pi*2))))
+        wing.lineToPoint_(NSMakePoint(cx+side*r*0.3, cy+r*0.4))
+        wing.closePath()
+    col.colorWithAlphaComponent_(0.55).setFill(); wing.fill()
+    # Tête
+    col.colorWithAlphaComponent_(0.95).setFill()
+    NSBezierPath.bezierPathWithOvalInRect_(NSMakeRect(cx-r*0.45,cy+r*0.15,r*0.9,r*0.75)).fill()
+    # Cornes
+    for side in (-1,1):
+        horn = NSBezierPath.bezierPath()
+        horn.moveToPoint_(NSMakePoint(cx+side*r*0.22, cy+r*0.80))
+        horn.lineToPoint_(NSMakePoint(cx+side*r*0.32, cy+r*1.15))
+        horn.lineToPoint_(NSMakePoint(cx+side*r*0.12, cy+r*0.88))
+        horn.closePath()
+        _c(1.0,0.75,0.10,0.9).setFill(); horn.fill()
+    # Yeux
+    ey = cy+r*0.48
+    for side in (-1,1):
+        ex = cx+side*r*0.22
+        if blink:
+            lp = NSBezierPath.bezierPath()
+            lp.moveToPoint_(NSMakePoint(ex-r*0.12, ey))
+            lp.lineToPoint_(NSMakePoint(ex+r*0.12, ey))
+            _c(1,1,1,0.9).setStroke(); lp.setLineWidth_(1.2); lp.stroke()
+        else:
+            _c(1.0,0.85,0.10,1.0).setFill()
+            NSBezierPath.bezierPathWithOvalInRect_(NSMakeRect(ex-r*0.12,ey-r*0.12,r*0.24,r*0.22)).fill()
+    # Feu
+    fire_y = cy - r*0.55
+    fire = NSBezierPath.bezierPath()
+    fire.moveToPoint_(NSMakePoint(cx-r*0.18, fire_y))
+    fire.lineToPoint_(NSMakePoint(cx, fire_y - r*(0.35+0.12*math.sin(t*math.pi*4))))
+    fire.lineToPoint_(NSMakePoint(cx+r*0.18, fire_y))
+    fire.closePath()
+    _c(1.0,0.45,0.05,0.9).setFill(); fire.fill()
+    img.unlockFocus(); img.setTemplate_(False)
+    return img
+
+
+def _draw_bear(t, state, blink, size=24):
+    rc, gc, bc = _STATE_COL[state]
+    col = _c(rc, gc, bc, 1.0)
+    img = NSImage.alloc().initWithSize_(NSMakeSize(size, size))
+    img.lockFocus()
+    NSColor.clearColor().setFill(); NSRectFill(NSMakeRect(0, 0, size, size))
+    cx, cy, r = size*0.5, size*0.46, size*0.36
+    # Oreilles
+    for side in (-1,1):
+        ex = cx + side*r*0.62
+        col.colorWithAlphaComponent_(0.85).setFill()
+        NSBezierPath.bezierPathWithOvalInRect_(NSMakeRect(ex-r*0.28,cy+r*0.52,r*0.56,r*0.52)).fill()
+        _c(1.0,0.72,0.60,0.7).setFill()
+        NSBezierPath.bezierPathWithOvalInRect_(NSMakeRect(ex-r*0.16,cy+r*0.60,r*0.32,r*0.30)).fill()
+    # Corps
+    col.colorWithAlphaComponent_(0.85).setFill()
+    NSBezierPath.bezierPathWithOvalInRect_(NSMakeRect(cx-r*0.75,cy-r*0.72,r*1.5,r*1.44)).fill()
+    # Museau
+    _c(1.0,0.82,0.68,0.9).setFill()
+    NSBezierPath.bezierPathWithOvalInRect_(NSMakeRect(cx-r*0.38,cy-r*0.22,r*0.76,r*0.54)).fill()
+    # Nez
+    _c(0.15,0.10,0.08,1.0).setFill()
+    NSBezierPath.bezierPathWithOvalInRect_(NSMakeRect(cx-r*0.14,cy+r*0.12,r*0.28,r*0.18)).fill()
+    # Bouche
+    m = NSBezierPath.bezierPath(); m.setLineWidth_(1.0)
+    m.moveToPoint_(NSMakePoint(cx-r*0.12, cy-r*0.06))
+    m.curveToPoint_controlPoint1_controlPoint2_(
+        NSMakePoint(cx+r*0.12, cy-r*0.06),
+        NSMakePoint(cx-r*0.06, cy-r*0.20),
+        NSMakePoint(cx+r*0.06, cy-r*0.20))
+    _c(0.15,0.10,0.08,0.8).setStroke(); m.stroke()
+    # Yeux
+    ey = cy + r*0.38
+    bob = r*0.05*math.sin(t*math.pi*2)
+    for side in (-1,1):
+        ex = cx + side*r*0.30
+        if blink:
+            lp = NSBezierPath.bezierPath()
+            lp.moveToPoint_(NSMakePoint(ex-r*0.12, ey+bob))
+            lp.lineToPoint_(NSMakePoint(ex+r*0.12, ey+bob))
+            _c(0.15,0.10,0.08,0.9).setStroke(); lp.setLineWidth_(1.2); lp.stroke()
+        else:
+            _c(0.15,0.10,0.08,1.0).setFill()
+            NSBezierPath.bezierPathWithOvalInRect_(NSMakeRect(ex-r*0.13,ey-r*0.13+bob,r*0.26,r*0.24)).fill()
+            _c(1,1,1,0.6).setFill()
+            NSBezierPath.bezierPathWithOvalInRect_(NSMakeRect(ex+r*0.03,ey+r*0.02+bob,r*0.07,r*0.07)).fill()
+    img.unlockFocus(); img.setTemplate_(False)
+    return img
+
+
+def _draw_wizard(t, state, blink, size=24):
+    rc, gc, bc = _STATE_COL[state]
+    col = _c(rc, gc, bc, 1.0)
+    img = NSImage.alloc().initWithSize_(NSMakeSize(size, size))
+    img.lockFocus()
+    NSColor.clearColor().setFill(); NSRectFill(NSMakeRect(0, 0, size, size))
+    cx, cy, r = size*0.5, size*0.42, size*0.34
+    # Cape
+    cape = NSBezierPath.bezierPath()
+    cape.moveToPoint_(NSMakePoint(cx-r*0.85, cy-r*0.8))
+    cape.lineToPoint_(NSMakePoint(cx+r*0.85, cy-r*0.8))
+    cape.lineToPoint_(NSMakePoint(cx+r*0.65, cy+r*0.3))
+    cape.lineToPoint_(NSMakePoint(cx-r*0.65, cy+r*0.3))
+    cape.closePath()
+    col.colorWithAlphaComponent_(0.7).setFill(); cape.fill()
+    # Tête
+    _c(1.0,0.88,0.72,1.0).setFill()
+    NSBezierPath.bezierPathWithOvalInRect_(NSMakeRect(cx-r*0.42,cy+r*0.18,r*0.84,r*0.80)).fill()
+    # Chapeau
+    hat = NSBezierPath.bezierPath()
+    hat.moveToPoint_(NSMakePoint(cx-r*0.50, cy+r*0.98))
+    hat.lineToPoint_(NSMakePoint(cx+r*0.50, cy+r*0.98))
+    hat.lineToPoint_(NSMakePoint(cx+r*(0.15+0.06*math.sin(t*math.pi*2)), cy+r*1.90))
+    hat.lineToPoint_(NSMakePoint(cx-r*(0.15+0.06*math.sin(t*math.pi*2)), cy+r*1.90))
+    hat.closePath()
+    col.colorWithAlphaComponent_(0.95).setFill(); hat.fill()
+    # Bord chapeau
+    col.colorWithAlphaComponent_(0.85).setFill()
+    NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+        NSMakeRect(cx-r*0.60, cy+r*0.90, r*1.20, r*0.20), r*0.10, r*0.10).fill()
+    # Étoile sur chapeau
+    star_y = cy+r*1.40
+    _c(1.0,0.90,0.20,0.9).setFill()
+    NSBezierPath.bezierPathWithOvalInRect_(NSMakeRect(cx-r*0.10, star_y, r*0.20, r*0.20)).fill()
+    # Yeux
+    ey = cy + r*0.55
+    for side in (-1,1):
+        ex = cx + side*r*0.22
+        if blink:
+            lp = NSBezierPath.bezierPath()
+            lp.moveToPoint_(NSMakePoint(ex-r*0.10, ey))
+            lp.lineToPoint_(NSMakePoint(ex+r*0.10, ey))
+            _c(0.10,0.08,0.15,0.9).setStroke(); lp.setLineWidth_(1.0); lp.stroke()
+        else:
+            _c(0.10,0.08,0.15,1.0).setFill()
+            NSBezierPath.bezierPathWithOvalInRect_(NSMakeRect(ex-r*0.10,ey-r*0.10,r*0.20,r*0.18)).fill()
+    # Baguette
+    wand = NSBezierPath.bezierPath()
+    wand.moveToPoint_(NSMakePoint(cx+r*0.55, cy-r*0.20))
+    wand.lineToPoint_(NSMakePoint(cx+r*0.90, cy+r*(0.30+0.08*math.sin(t*math.pi*3))))
+    _c(1,1,1,0.7).setStroke(); wand.setLineWidth_(1.2); wand.stroke()
+    _c(1.0,0.90,0.20,1.0).setFill()
+    tip_y = cy+r*(0.30+0.08*math.sin(t*math.pi*3))
+    NSBezierPath.bezierPathWithOvalInRect_(NSMakeRect(cx+r*0.84, tip_y-r*0.08, r*0.16, r*0.16)).fill()
+    img.unlockFocus(); img.setTemplate_(False)
+    return img
+
+
+def _draw_fox(t, state, blink, size=24):
+    rc, gc, bc = _STATE_COL[state]
+    col = _c(rc, gc, bc, 1.0)
+    img = NSImage.alloc().initWithSize_(NSMakeSize(size, size))
+    img.lockFocus()
+    NSColor.clearColor().setFill(); NSRectFill(NSMakeRect(0, 0, size, size))
+    bob = size*0.04*math.sin(t*math.pi*2)
+    cx, cy, r = size*0.5, size*0.44+bob, size*0.36
+    # Corps
+    col.colorWithAlphaComponent_(0.9).setFill()
+    NSBezierPath.bezierPathWithOvalInRect_(NSMakeRect(cx-r*0.75,cy-r*0.75,r*1.5,r*1.5)).fill()
+    # Oreilles pointues
+    for side in (-1,1):
+        ear = NSBezierPath.bezierPath()
+        ear.moveToPoint_(NSMakePoint(cx+side*r*0.18, cy+r*0.70))
+        ear.lineToPoint_(NSMakePoint(cx+side*r*0.55, cy+r*1.30))
+        ear.lineToPoint_(NSMakePoint(cx+side*r*0.62, cy+r*0.68))
+        ear.closePath()
+        col.colorWithAlphaComponent_(0.95).setFill(); ear.fill()
+        # Intérieur oreille
+        inner = NSBezierPath.bezierPath()
+        inner.moveToPoint_(NSMakePoint(cx+side*r*0.24, cy+r*0.72))
+        inner.lineToPoint_(NSMakePoint(cx+side*r*0.50, cy+r*1.16))
+        inner.lineToPoint_(NSMakePoint(cx+side*r*0.55, cy+r*0.72))
+        inner.closePath()
+        _c(1.0,0.72,0.60,0.7).setFill(); inner.fill()
+    # Museau blanc
+    _c(0.96,0.94,0.90,0.95).setFill()
+    NSBezierPath.bezierPathWithOvalInRect_(NSMakeRect(cx-r*0.36,cy-r*0.30,r*0.72,r*0.52)).fill()
+    # Nez
+    _c(0.15,0.10,0.08,1.0).setFill()
+    NSBezierPath.bezierPathWithOvalInRect_(NSMakeRect(cx-r*0.11,cy+r*0.10,r*0.22,r*0.16)).fill()
+    # Yeux
+    ey = cy+r*0.38
+    for side in (-1,1):
+        ex = cx+side*r*0.26
+        if blink:
+            lp = NSBezierPath.bezierPath()
+            lp.moveToPoint_(NSMakePoint(ex-r*0.12, ey))
+            lp.lineToPoint_(NSMakePoint(ex+r*0.12, ey))
+            _c(0.10,0.06,0.04,0.9).setStroke(); lp.setLineWidth_(1.2); lp.stroke()
+        else:
+            _c(0.10,0.06,0.04,1.0).setFill()
+            NSBezierPath.bezierPathWithOvalInRect_(NSMakeRect(ex-r*0.13,ey-r*0.13,r*0.26,r*0.24)).fill()
+            _c(1,1,1,0.55).setFill()
+            NSBezierPath.bezierPathWithOvalInRect_(NSMakeRect(ex+r*0.02,ey+r*0.02,r*0.08,r*0.08)).fill()
+    # Queue
+    tail = NSBezierPath.bezierPath()
+    tail.moveToPoint_(NSMakePoint(cx-r*0.65, cy-r*0.55))
+    tail.curveToPoint_controlPoint1_controlPoint2_(
+        NSMakePoint(cx-r*(1.2+0.1*math.sin(t*math.pi*2)), cy-r*0.10),
+        NSMakePoint(cx-r*1.10, cy-r*0.70),
+        NSMakePoint(cx-r*1.30, cy-r*0.30))
+    col.colorWithAlphaComponent_(0.7).setStroke(); tail.setLineWidth_(3.0); tail.stroke()
+    _c(0.96,0.94,0.90,0.8).setStroke(); tail.setLineWidth_(1.2); tail.stroke()
+    img.unlockFocus(); img.setTemplate_(False)
+    return img
+
+
+def _draw_penguin(t, state, blink, size=24):
+    rc, gc, bc = _STATE_COL[state]
+    col = _c(rc, gc, bc, 1.0)
+    img = NSImage.alloc().initWithSize_(NSMakeSize(size, size))
+    img.lockFocus()
+    NSColor.clearColor().setFill(); NSRectFill(NSMakeRect(0, 0, size, size))
+    cx, cy, r = size*0.5, size*0.44, size*0.36
+    bob = r*0.04*math.sin(t*math.pi*2)
+    # Corps noir
+    _c(0.10,0.10,0.14,0.95).setFill()
+    NSBezierPath.bezierPathWithOvalInRect_(NSMakeRect(cx-r*0.72,cy-r*0.80+bob,r*1.44,r*1.60)).fill()
+    # Ventre blanc
+    _c(0.95,0.95,0.98,0.92).setFill()
+    NSBezierPath.bezierPathWithOvalInRect_(NSMakeRect(cx-r*0.40,cy-r*0.50+bob,r*0.80,r*1.10)).fill()
+    # Tête
+    _c(0.10,0.10,0.14,0.95).setFill()
+    NSBezierPath.bezierPathWithOvalInRect_(NSMakeRect(cx-r*0.48,cy+r*0.52+bob,r*0.96,r*0.90)).fill()
+    # Bec
+    col.colorWithAlphaComponent_(0.9).setFill()
+    beak = NSBezierPath.bezierPath()
+    beak.moveToPoint_(NSMakePoint(cx-r*0.14, cy+r*0.78+bob))
+    beak.lineToPoint_(NSMakePoint(cx+r*0.14, cy+r*0.78+bob))
+    beak.lineToPoint_(NSMakePoint(cx, cy+r*0.58+bob))
+    beak.closePath(); beak.fill()
+    # Yeux
+    ey = cy+r*0.98+bob
+    for side in (-1,1):
+        ex = cx+side*r*0.22
+        if blink:
+            lp = NSBezierPath.bezierPath()
+            lp.moveToPoint_(NSMakePoint(ex-r*0.11, ey))
+            lp.lineToPoint_(NSMakePoint(ex+r*0.11, ey))
+            _c(1,1,1,0.9).setStroke(); lp.setLineWidth_(1.2); lp.stroke()
+        else:
+            _c(0.96,0.96,1.0,1.0).setFill()
+            NSBezierPath.bezierPathWithOvalInRect_(NSMakeRect(ex-r*0.13,ey-r*0.13,r*0.26,r*0.24)).fill()
+            _c(0.10,0.10,0.14,1.0).setFill()
+            NSBezierPath.bezierPathWithOvalInRect_(NSMakeRect(ex-r*0.07,ey-r*0.07,r*0.14,r*0.14)).fill()
+    # Ailes
+    for side in (-1,1):
+        wing = NSBezierPath.bezierPath()
+        flap = r*0.08*math.sin(t*math.pi*2)
+        wing.moveToPoint_(NSMakePoint(cx+side*r*0.62, cy+r*0.20+bob))
+        wing.lineToPoint_(NSMakePoint(cx+side*r*(0.90+flap*side), cy-r*0.10+bob))
+        wing.lineToPoint_(NSMakePoint(cx+side*r*0.62, cy-r*0.40+bob))
+        wing.closePath()
+        _c(0.12,0.12,0.16,0.85).setFill(); wing.fill()
+    img.unlockFocus(); img.setTemplate_(False)
+    return img
+
+
 _ICON_DRAW = {
     "robot":     _draw_robot,
     "pulse":     _draw_pulse,
@@ -1845,6 +2119,11 @@ _ICON_DRAW = {
     "planet":    _draw_planet,
     "flame":     _draw_flame,
     "panda":     _draw_panda,
+    "dragon":    _draw_dragon,
+    "bear":      _draw_bear,
+    "wizard":    _draw_wizard,
+    "fox":       _draw_fox,
+    "penguin":   _draw_penguin,
 }
 
 def draw_character(t, state, blink, size=24):
