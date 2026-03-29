@@ -30,7 +30,7 @@ Y_FLOOR     = 14
 PH_BY_TAB = {
     "sys":  520,   # cpu(136) + gap + ram(116) + gap + batt+tz(106) + marges
     "net":  540,   # réseau(188) + disque(130) + speedtest(88) + marges
-    "cal":  560,   # calendrier(190) + musique(102) + météo(58) + volume(36) + marges
+    "cal":  490,   # cal(62+) + volume(36) + musique(84) + météo(58) + marges
     "proc": 720,   # 10 procs(284) + actions(48) + icônes(160) + thèmes(54) + quitter(34)
 }
 PH          = PH_BY_TAB["sys"]   # hauteur initiale (onglet sys par défaut)
@@ -604,7 +604,37 @@ class PanelView(NSView):
                 if i < len(events) - 1:
                     _sep(ey - 5, PAD + 10, PAD + bw - 10)
 
-        y -= cal_h + 24
+        y -= cal_h + 18
+
+        # ── Volume ────────────────────────────────────
+        vol = s.get('volume', -1)
+        if vol >= 0:
+            vh = 36
+            _card(PAD, y, bw, vh, C_MUS, alpha=0.05)
+            _draw(f"{'🔇' if vol == 0 else '🔊'}", PAD + 10, y - 24, C_WHITE, SF(11, 0.0))
+            _draw("Volume", PAD + 28, y - 24, C_GRAY, F_SM)
+            bar_x = PAD + 75; bar_w = bw - 75 - 90; bar_h = 5
+            bar_y = y - 23
+            _c(1,1,1,0.08).setFill()
+            NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+                NSMakeRect(bar_x, bar_y, bar_w, bar_h), 2.5, 2.5).fill()
+            if vol > 0:
+                fw = bar_w * vol / 100
+                vc = C_RED if vol > 80 else C_ORA if vol > 60 else C_MUS
+                vc.setFill()
+                NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+                    NSMakeRect(bar_x, bar_y, fw, bar_h), 2.5, 2.5).fill()
+            _draw_r(f"{vol}%", bar_x + bar_w + 38, y - 24, C_GRAY, F_SM)
+            bsz = 22
+            for btn_name, lbl, bx in (
+                ("vol_dn", "−", bar_x + bar_w + 40),
+                ("vol_up", "+", bar_x + bar_w + 64),
+            ):
+                hbg = _c(1,1,1,0.14) if self._hover == btn_name else _c(1,1,1,0.07)
+                rects[btn_name] = _btn(bx, y - vh + 7, bsz, bsz, lbl, hbg, C_WHITE, r=5)
+            y -= vh + 14
+        else:
+            y -= 14
 
         # ── Musique Card ──────────────────────────────
         music = s.get('music', '')
@@ -638,7 +668,7 @@ class PanelView(NSView):
         rects["music_play"] = NSMakeRect(PAD + 8 + mbw + 4,   y - 74, mbw, 22)
         rects["music_next"] = NSMakeRect(PAD + 8 + (mbw+4)*2, y - 74, mbw, 22)
 
-        y -= 84 + 18
+        y -= 84 + 14
 
         # ── Météo Card ────────────────────────────────
         weather = s.get('weather', '')
@@ -648,35 +678,6 @@ class PanelView(NSView):
             _draw(weather, PAD + 10, y - 36, C_WHITE, SF(14, 0.0))
         else:
             _draw("Chargement…", PAD + 10, y - 36, _c(1, 1, 1, 0.20), F_INFO)
-
-        y -= 58 + 18
-
-        # ── Volume ────────────────────────────────────
-        vol = s.get('volume', -1)
-        if vol >= 0:
-            vh = 36
-            _card(PAD, y, bw, vh, C_MUS, alpha=0.05)
-            _draw(f"{'🔇' if vol == 0 else '🔊'}", PAD + 10, y - 24, C_WHITE, SF(11, 0.0))
-            _draw("Volume", PAD + 28, y - 24, C_GRAY, F_SM)
-            bar_x = PAD + 75; bar_w = bw - 75 - 90; bar_h = 5
-            bar_y = y - 23
-            _c(1,1,1,0.08).setFill()
-            NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
-                NSMakeRect(bar_x, bar_y, bar_w, bar_h), 2.5, 2.5).fill()
-            if vol > 0:
-                fw = bar_w * vol / 100
-                vc = C_RED if vol > 80 else C_ORA if vol > 60 else C_MUS
-                vc.setFill()
-                NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
-                    NSMakeRect(bar_x, bar_y, fw, bar_h), 2.5, 2.5).fill()
-            _draw_r(f"{vol}%", bar_x + bar_w + 38, y - 24, C_GRAY, F_SM)
-            bsz = 22
-            for btn_name, lbl, bx in (
-                ("vol_dn", "−", bar_x + bar_w + 40),
-                ("vol_up", "+", bar_x + bar_w + 64),
-            ):
-                hbg = _c(1,1,1,0.14) if self._hover == btn_name else _c(1,1,1,0.07)
-                rects[btn_name] = _btn(bx, y - vh + 7, bsz, bsz, lbl, hbg, C_WHITE, r=5)
 
     # ── Page 4 : Process ─────────────────────────────────────
     def _draw_proc(self, y, bw, s, w, rects):
@@ -890,7 +891,13 @@ class PanelView(NSView):
             if (r.origin.x <= pt.x <= r.origin.x + r.size.width and
                     r.origin.y <= pt.y <= r.origin.y + r.size.height):
                 self._tab = tab
-                new_ph = PH_BY_TAB.get(tab, 520)
+                if tab == "cal":
+                    n_ev = max(len(_app._cal), 1) if _app else 1
+                    cal_h = n_ev * 26 + 36
+                    new_ph = cal_h + 18 + 36 + 14 + 84 + 14 + 58 + 90
+                    new_ph = max(new_ph, 420)
+                else:
+                    new_ph = PH_BY_TAB.get(tab, 520)
                 self.setFrame_(NSMakeRect(0, 0, PW, new_ph))
                 if _panel_win:
                     _panel_win.setContentSize_(NSMakeSize(PW, new_ph))
@@ -2235,7 +2242,7 @@ def _get_focus_mode():
 def _get_world_times():
     now = datetime.now()
     result = []
-    for label, tz in [("UTC", "UTC"), ("NY", "America/New_York"), ("Tokyo", "Asia/Tokyo")]:
+    for label, tz in [("Paris", "Europe/Paris"), ("NY", "America/New_York"), ("Tokyo", "Asia/Tokyo")]:
         try:
             t = datetime.now(ZoneInfo(tz))
             result.append((label, t.strftime("%H:%M")))
@@ -2283,7 +2290,14 @@ class _MenuDelegate(NSObject):
         btn = self._nsitem.button()
         btn_rect    = btn.convertRect_toView_(btn.bounds(), None)
         screen_rect = btn.window().convertRectToScreen_(btn_rect)
-        ph = PH_BY_TAB.get(getattr(self._view, '_tab', 'sys'), 520)
+        current_tab = getattr(self._view, '_tab', 'sys')
+        if current_tab == "cal":
+            n_ev = max(len(_app._cal), 1) if _app else 1
+            cal_h = n_ev * 26 + 36
+            ph = cal_h + 18 + 36 + 14 + 84 + 14 + 58 + 90
+            ph = max(ph, 420)
+        else:
+            ph = PH_BY_TAB.get(current_tab, 520)
         panel_x = screen_rect.origin.x + screen_rect.size.width / 2 - PW / 2
         panel_y = screen_rect.origin.y - ph - 4
         from AppKit import NSScreen
@@ -2320,6 +2334,8 @@ class MacMonitorPro(rumps.App):
         self._cpu_hist_long = deque([0.0] * 180, maxlen=180)  # 180 × 2s = 6 minutes
         self._ram_hist_long = deque([0.0] * 180, maxlen=180)
         self._hist_long_t   = 0.0
+        self._hist_save_t   = 0.0
+        self._load_hist()
 
         self._prev_disk = psutil.disk_io_counters()
         psutil.cpu_percent()
@@ -2435,14 +2451,14 @@ class MacMonitorPro(rumps.App):
         if not self._setup_done: return
         now   = time.time()
         icon_key = (round(self._t * 20) / 20, self._state, self._blink, _ICON_STYLE)
+        btn = self._nsapp.nsstatusitem.button()
         if icon_key != self._last_icon_key:
             img = draw_character(self._t, self._state, self._blink)
             self._last_icon_key = icon_key
             self._last_icon_img = img
-        else:
-            img = self._last_icon_img
-        btn   = self._nsapp.nsstatusitem.button()
-        btn.setImage_(img)
+            btn.setImage_(img)
+        elif panel_open:
+            btn.setImage_(self._last_icon_img)
         if self._pomo_end > 0:
             left  = max(0.0, self._pomo_end - now)
             title = f"  ⏰ {int(left)//60:02d}:{int(left)%60:02d}"
@@ -2555,7 +2571,6 @@ class MacMonitorPro(rumps.App):
             _bg("_top_cache", lambda: _top_procs(6),      8,  "_top_last")
             _bg("_temp",      _get_cpu_temp,               30)
             _bg("_ping",      _get_ping,                   20)
-            _bg("_mpres",     _get_mem_pressure,            15)
             _bg("_wifi",      _get_wifi_info,               15)
             _bg("_bhealth",   _get_batt_health,             300)
             _bg("_gpu",       _get_gpu_usage,               3)
@@ -2581,6 +2596,9 @@ class MacMonitorPro(rumps.App):
         if now - self._vpn_t > 5:
             self._vpn_t = now
             threading.Thread(target=self._fetch_vpn, daemon=True).start()
+        if now - self._hist_save_t > 60:
+            self._hist_save_t = now
+            threading.Thread(target=self._save_hist, daemon=True).start()
 
         freq_s = f"{freq.current:.0f} MHz" if freq else "—"
 
@@ -2649,6 +2667,29 @@ class MacMonitorPro(rumps.App):
         _S['weather'] = result
         if _panel_view and getattr(_panel_view, '_tab', '') == 'cal':
             _panel_view.display()
+
+    def _load_hist(self):
+        try:
+            path = os.path.expanduser("~/.cache/macmonitor_hist.json")
+            if os.path.exists(path):
+                with open(path) as f:
+                    d = json.load(f)
+                if time.time() - d.get("t", 0) < 3600:
+                    for v in d.get("cpu", [])[-HIST:]: self._cpu_hist.append(v)
+                    for v in d.get("ram", [])[-HIST:]: self._ram_hist.append(v)
+        except Exception:
+            pass
+
+    def _save_hist(self):
+        try:
+            os.makedirs(os.path.expanduser("~/.cache"), exist_ok=True)
+            path = os.path.expanduser("~/.cache/macmonitor_hist.json")
+            with open(path, "w") as f:
+                json.dump({"t": time.time(),
+                           "cpu": list(self._cpu_hist),
+                           "ram": list(self._ram_hist)}, f)
+        except Exception:
+            pass
 
     def _fetch_vpn(self):
         result = _get_vpn_status()
